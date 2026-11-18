@@ -41,8 +41,10 @@ param(
     [switch]$AllAssets
 )
 
-Set-StrictMode -Version 3.0
 $ErrorActionPreference = "Stop"
+
+# Принудительное включение TLS 1.2 для корректной работы с GitHub API в PowerShell 5.1
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # ============================ HELPERS ============================
 
@@ -112,8 +114,6 @@ function Save-ReleaseAsset {
     }
 
     # Private repo: API URL + Accept: octet-stream.
-    # curl.exe follows the cross-host redirect (api -> objects.githubusercontent)
-    # without forwarding the token to the "foreign" host - IWR on 5.1 often breaks here.
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
         $curlArgs = @('-L', '--fail', '--retry', '3', '--retry-delay', '2',
                       '-o', $OutputPath,
@@ -158,17 +158,34 @@ $headers = @{
     'User-Agent' = 'PS-GH-Releases-Launcher'
     'Accept'     = 'application/vnd.github+json'
 }
+$authUser = $null
 if ($Token) {
     $headers['Authorization'] = "Bearer $Token"
-    Write-Host "[i] Token provided - private repos accessible." -ForegroundColor DarkGray
+    Write-Host "[i] Token provided - checking authentication..." -ForegroundColor DarkGray
+    try {
+        $me = Invoke-RestMethod -Uri "https://api.github.com/user" -Headers $headers -Method Get -ErrorAction Stop
+        $authUser = $me.login
+        Write-Host "[i] Authenticated as '$authUser' - private repos accessible." -ForegroundColor DarkGray
+    } catch {
+        Write-Host "[!] Token check failed (continuing with public access): $_" -ForegroundColor Yellow
+    }
 }
 
 # ============================ USERNAME ============================
 
 if ([string]::IsNullOrWhiteSpace($DefaultUser) -or $DefaultUser -eq 'YOUR_GITHUB_USERNAME') {
-    $in = Read-Host "GitHub username"
-    if ([string]::IsNullOrWhiteSpace($in)) { Write-Host 'Cancelled.'; return }
-    $TargetUser = $in.Trim()
+    $prompt = if ($authUser) { "GitHub username (Enter = '$authUser')" } else { "GitHub username" }
+    $in = Read-Host $prompt
+    if ([string]::IsNullOrWhiteSpace($in)) {
+        if ($authUser) {
+            $TargetUser = $authUser
+        } else {
+            Write-Host 'Cancelled.'
+            return
+        }
+    } else {
+        $TargetUser = $in.Trim()
+    }
 } else {
     $in = Read-Host "GitHub username (Enter = '$DefaultUser')"
     $TargetUser = if ([string]::IsNullOrWhiteSpace($in)) { $DefaultUser } else { $in.Trim() }
@@ -177,7 +194,14 @@ if ([string]::IsNullOrWhiteSpace($DefaultUser) -or $DefaultUser -eq 'YOUR_GITHUB
 # ============================ REPOSITORIES ============================
 
 Write-Host "[*] Fetching repositories for $TargetUser..." -ForegroundColor Cyan
-$repoApi = "https://api.github.com/users/$TargetUser/repos?per_page=100&sort=updated"
+
+# Если запрашиваем свои репозитории с активным токеном, используем /user/repos для доступа к приватным
+if ($authUser -and ($TargetUser -ieq $authUser)) {
+    $repoApi = "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner"
+} else {
+    $repoApi = "https://api.github.com/users/$TargetUser/repos?per_page=100&sort=updated"
+}
+
 try {
     $repos = @(Invoke-RestMethod -Uri $repoApi -Headers $headers -Method Get -ErrorAction Stop)
 } catch {
