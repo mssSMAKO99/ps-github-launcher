@@ -48,6 +48,28 @@ $ErrorActionPreference = "Stop"
 
 # ============================ HELPERS ============================
 
+function Invoke-GitHubApi {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers
+    )
+    # Используем Invoke-WebRequest + ConvertFrom-Json вместо Invoke-RestMethod,
+    # так как Invoke-RestMethod в PowerShell 5.1 часто склеивает JSON-массив в один объект
+    $resp = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -UseBasicParsing -ErrorAction Stop
+    $content = $resp.Content
+    if ($content -is [byte[]]) {
+        $content = [System.Text.Encoding]::UTF8.GetString($content)
+    }
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        return @()
+    }
+    $parsed = $content | ConvertFrom-Json
+    if ($null -eq $parsed) {
+        return @()
+    }
+    return @($parsed)
+}
+
 function Get-AssetPlatform {
     param([string]$Name)
     $n = $Name.ToLower()
@@ -163,9 +185,11 @@ if ($Token) {
     $headers['Authorization'] = "Bearer $Token"
     Write-Host "[i] Token provided - checking authentication..." -ForegroundColor DarkGray
     try {
-        $me = Invoke-RestMethod -Uri "https://api.github.com/user" -Headers $headers -Method Get -ErrorAction Stop
-        $authUser = $me.login
-        Write-Host "[i] Authenticated as '$authUser' - private repos accessible." -ForegroundColor DarkGray
+        $meArr = Invoke-GitHubApi -Uri "https://api.github.com/user" -Headers $headers
+        if ($meArr.Count -gt 0 -and $meArr[0].login) {
+            $authUser = $meArr[0].login
+            Write-Host "[i] Authenticated as '$authUser' - private repos accessible." -ForegroundColor DarkGray
+        }
     } catch {
         Write-Host "[!] Token check failed (continuing with public access): $_" -ForegroundColor Yellow
     }
@@ -195,7 +219,6 @@ if ([string]::IsNullOrWhiteSpace($DefaultUser) -or $DefaultUser -eq 'YOUR_GITHUB
 
 Write-Host "[*] Fetching repositories for $TargetUser..." -ForegroundColor Cyan
 
-# Если запрашиваем свои репозитории с активным токеном, используем /user/repos для доступа к приватным
 if ($authUser -and ($TargetUser -ieq $authUser)) {
     $repoApi = "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner"
 } else {
@@ -203,7 +226,7 @@ if ($authUser -and ($TargetUser -ieq $authUser)) {
 }
 
 try {
-    $repos = @(Invoke-RestMethod -Uri $repoApi -Headers $headers -Method Get -ErrorAction Stop)
+    $repos = Invoke-GitHubApi -Uri $repoApi -Headers $headers
 } catch {
     Write-Host "[!] Failed to fetch repositories: $_" -ForegroundColor Red
     Read-Host "Press Enter to exit" | Out-Null
@@ -216,18 +239,18 @@ if ($repos.Count -eq 0) {
 }
 Write-Host "[i] Repositories found: $($repos.Count)" -ForegroundColor DarkGray
 
-$repoMenu = $repos | ForEach-Object {
+$repoMenu = @($repos | ForEach-Object {
     [PSCustomObject]@{
-        Repository  = $_.name
-        Stars       = $_.stargazers_count
+        Repository  = [string]$_.name
+        Stars       = [int]$_.stargazers_count
         Private     = if ($_.private) { 'Yes' } else { 'No' }
         Archived    = if ($_.archived) { 'Yes' } else { '' }
-        Description = $_.description
+        Description = [string]$_.description
     }
-}
-$pickedRepos = $repoMenu |
-    Out-GridView -Title "Repositories [$TargetUser] - select (Ctrl for multiple) -> OK" -OutputMode Multiple
-if (-not $pickedRepos) { Write-Host 'Nothing selected.'; return }
+})
+$pickedRepos = @($repoMenu |
+    Out-GridView -Title "Repositories [$TargetUser] - select (Ctrl for multiple) -> OK" -OutputMode Multiple)
+if ($pickedRepos.Count -eq 0) { Write-Host 'Nothing selected.'; return }
 
 $pickedRepoNames = @($pickedRepos | ForEach-Object { $_.Repository })
 $pickedRepoObjs  = @($repos | Where-Object { $pickedRepoNames -contains $_.name })
@@ -239,9 +262,9 @@ Write-Host "[*] Fetching releases (this may take a moment)..." -ForegroundColor 
 $allReleases = @()
 foreach ($repo in $pickedRepoObjs) {
     try {
-        $rel = @(Invoke-RestMethod `
+        $rel = Invoke-GitHubApi `
             -Uri "https://api.github.com/repos/$($repo.full_name)/releases?per_page=50" `
-            -Headers $headers -Method Get -ErrorAction Stop)
+            -Headers $headers
     } catch {
         Write-Host "[!] $($repo.name): failed to fetch releases: $_" -ForegroundColor Yellow
         continue
@@ -268,23 +291,23 @@ if ($allReleases.Count -eq 0) {
     return
 }
 
-$releaseMenu = $allReleases | ForEach-Object {
+$releaseMenu = @($allReleases | ForEach-Object {
     [PSCustomObject]@{
-        Repository = $_._repoName
-        Version    = $_.tag_name
-        Title      = $_.name
+        Repository = [string]$_._repoName
+        Version    = [string]$_.tag_name
+        Title      = [string]$_.name
         Date       = if ($_.published_at) { ([datetime]$_.published_at).ToString('yyyy-MM-dd') } else { '' }
         Files      = @($_.assets).Count
         Pre        = if ($_.prerelease) { 'Yes' } else { '' }
         Private    = if ($_._isPrivate) { 'Yes' } else { 'No' }
     }
-}
-$pickedReleases = $releaseMenu |
-    Out-GridView -Title "Releases - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple
-if (-not $pickedReleases) { Write-Host 'Nothing selected.'; return }
+})
+$pickedReleases = @($releaseMenu |
+    Out-GridView -Title "Releases - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple)
+if ($pickedReleases.Count -eq 0) { Write-Host 'Nothing selected.'; return }
 
 # Map back to release objects
-$pickedKeys = $pickedReleases | ForEach-Object { "$($_.Repository)|$($_.Version)" }
+$pickedKeys = @($pickedReleases | ForEach-Object { "$($_.Repository)|$($_.Version)" })
 $selectedReleaseObjs = @($allReleases | Where-Object { $pickedKeys -contains "$($_._repoName)|$($_.tag_name)" })
 
 # ============================ FILES ============================
@@ -295,12 +318,12 @@ Write-Host "[i] Current OS: $currentOS" -ForegroundColor DarkGray
 $assetRows = foreach ($rel in $selectedReleaseObjs) {
     foreach ($asset in @($rel.assets)) {
         [PSCustomObject]@{
-            Repository = $rel._repoName
-            Version    = $rel.tag_name
-            File       = $asset.name
+            Repository = [string]$rel._repoName
+            Version    = [string]$rel.tag_name
+            File       = [string]$asset.name
             OS         = Get-AssetPlatform $asset.name
             Size       = Format-Size $asset.size
-            Downloads  = $asset.download_count
+            Downloads  = [int]$asset.download_count
             # Technical fields - hidden from the menu, required for download
             _ApiUrl    = $asset.url
             _Browser   = $asset.browser_download_url
@@ -319,18 +342,18 @@ if ($assetRows.Count -eq 0) {
 }
 
 # Show native-OS assets first
-$displayRows = $assetRows |
+$displayRows = @($assetRows |
     Sort-Object -Property @{Expression={ if ($_.OS -eq $currentOS -or $_.OS -eq 'Any') { 0 } else { 1 } }},
                           @{Expression={ $_.Repository }}, @{Expression={ $_.Version }} |
-    Select-Object Repository, Version, File, OS, Size, Downloads
+    Select-Object Repository, Version, File, OS, Size, Downloads)
 
 if ($AllAssets) {
     $selectedAssets = $assetRows
 } else {
-    $pickedRows = $displayRows |
-        Out-GridView -Title "Files - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple
-    if (-not $pickedRows) { Write-Host 'Nothing selected.'; return }
-    $pickedKeys = $pickedRows | ForEach-Object { "$($_.Repository)|$($_.Version)|$($_.File)" }
+    $pickedRows = @($displayRows |
+        Out-GridView -Title "Files - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple)
+    if ($pickedRows.Count -eq 0) { Write-Host 'Nothing selected.'; return }
+    $pickedKeys = @($pickedRows | ForEach-Object { "$($_.Repository)|$($_.Version)|$($_.File)" })
     $selectedAssets = @($assetRows | Where-Object {
         $pickedKeys -contains "$($_.Repository)|$($_.Version)|$($_.File)"
     })
