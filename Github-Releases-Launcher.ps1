@@ -53,21 +53,27 @@ function Invoke-GitHubApi {
         [string]$Uri,
         [hashtable]$Headers
     )
-    # Используем Invoke-WebRequest + ConvertFrom-Json вместо Invoke-RestMethod,
-    # так как Invoke-RestMethod в PowerShell 5.1 часто склеивает JSON-массив в один объект
     $resp = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -UseBasicParsing -ErrorAction Stop
     $content = $resp.Content
     if ($content -is [byte[]]) {
         $content = [System.Text.Encoding]::UTF8.GetString($content)
     }
     if ([string]::IsNullOrWhiteSpace($content)) {
-        return @()
+        return ,@()
     }
     $parsed = $content | ConvertFrom-Json
-    if ($null -eq $parsed) {
-        return @()
+    $result = New-Object System.Collections.Generic.List[object]
+    if ($parsed -is [System.Collections.IEnumerable] -and -not ($parsed -is [string]) -and -not ($parsed -is [pscustomobject])) {
+        foreach ($item in $parsed) {
+            if ($null -ne $item) {
+                $result.Add($item)
+            }
+        }
+    } elseif ($null -ne $parsed) {
+        $result.Add($parsed)
     }
-    return @($parsed)
+    # Запятая перед $result запрещает PowerShell разворачивать или склеивать массив при возврате
+    return ,$result.ToArray()
 }
 
 function Get-AssetPlatform {
@@ -187,7 +193,7 @@ if ($Token) {
     try {
         $meArr = Invoke-GitHubApi -Uri "https://api.github.com/user" -Headers $headers
         if ($meArr.Count -gt 0 -and $meArr[0].login) {
-            $authUser = $meArr[0].login
+            $authUser = [string]$meArr[0].login
             Write-Host "[i] Authenticated as '$authUser' - private repos accessible." -ForegroundColor DarkGray
         }
     } catch {
@@ -239,27 +245,29 @@ if ($repos.Count -eq 0) {
 }
 Write-Host "[i] Repositories found: $($repos.Count)" -ForegroundColor DarkGray
 
-$repoMenu = @($repos | ForEach-Object {
-    [PSCustomObject]@{
-        Repository  = [string]$_.name
-        Stars       = [int]$_.stargazers_count
-        Private     = if ($_.private) { 'Yes' } else { 'No' }
-        Archived    = if ($_.archived) { 'Yes' } else { '' }
-        Description = [string]$_.description
-    }
-})
-$pickedRepos = @($repoMenu |
+$repoMenu = New-Object System.Collections.Generic.List[object]
+foreach ($r in $repos) {
+    $repoMenu.Add([PSCustomObject]@{
+        Repository  = [string]$r.name
+        Stars       = [int]$r.stargazers_count
+        Private     = if ($r.private) { 'Yes' } else { 'No' }
+        Archived    = if ($r.archived) { 'Yes' } else { '' }
+        Description = [string]$r.description
+    })
+}
+
+$pickedRepos = @($repoMenu.ToArray() |
     Out-GridView -Title "Repositories [$TargetUser] - select (Ctrl for multiple) -> OK" -OutputMode Multiple)
 if ($pickedRepos.Count -eq 0) { Write-Host 'Nothing selected.'; return }
 
 $pickedRepoNames = @($pickedRepos | ForEach-Object { $_.Repository })
-$pickedRepoObjs  = @($repos | Where-Object { $pickedRepoNames -contains $_.name })
+$pickedRepoObjs  = @($repos | Where-Object { $pickedRepoNames -contains [string]$_.name })
 
 # ============================ RELEASES ============================
 
 Write-Host "[*] Fetching releases (this may take a moment)..." -ForegroundColor Cyan
 
-$allReleases = @()
+$allReleases = New-Object System.Collections.Generic.List[object]
 foreach ($repo in $pickedRepoObjs) {
     try {
         $rel = Invoke-GitHubApi `
@@ -276,14 +284,14 @@ foreach ($repo in $pickedRepoObjs) {
         continue
     }
     if (-not $AllVersions) {
-        $rel = @($rel[0])   # latest (API already sorts newest first)
+        $rel = @($rel[0])
     }
     foreach ($r in $rel) {
-        $r | Add-Member -NotePropertyName '_repoName'  -NotePropertyValue $repo.name          -Force
-        $r | Add-Member -NotePropertyName '_isPrivate' -NotePropertyValue ([bool]$repo.private) -Force
-        $r | Add-Member -NotePropertyName '_fullName'  -NotePropertyValue $repo.full_name     -Force
+        $r | Add-Member -NotePropertyName '_repoName'  -NotePropertyValue ([string]$repo.name)      -Force
+        $r | Add-Member -NotePropertyName '_isPrivate' -NotePropertyValue ([bool]$repo.private)     -Force
+        $r | Add-Member -NotePropertyName '_fullName'  -NotePropertyValue ([string]$repo.full_name) -Force
+        $allReleases.Add($r)
     }
-    $allReleases += $rel
 }
 if ($allReleases.Count -eq 0) {
     Write-Host "[!] None of the selected repositories have releases." -ForegroundColor Yellow
@@ -291,18 +299,21 @@ if ($allReleases.Count -eq 0) {
     return
 }
 
-$releaseMenu = @($allReleases | ForEach-Object {
-    [PSCustomObject]@{
-        Repository = [string]$_._repoName
-        Version    = [string]$_.tag_name
-        Title      = [string]$_.name
-        Date       = if ($_.published_at) { ([datetime]$_.published_at).ToString('yyyy-MM-dd') } else { '' }
-        Files      = @($_.assets).Count
-        Pre        = if ($_.prerelease) { 'Yes' } else { '' }
-        Private    = if ($_._isPrivate) { 'Yes' } else { 'No' }
-    }
-})
-$pickedReleases = @($releaseMenu |
+$releaseMenu = New-Object System.Collections.Generic.List[object]
+foreach ($relItem in $allReleases) {
+    $assetsList = @($relItem.assets)
+    $releaseMenu.Add([PSCustomObject]@{
+        Repository = [string]$relItem._repoName
+        Version    = [string]$relItem.tag_name
+        Title      = [string]$relItem.name
+        Date       = if ($relItem.published_at) { ([datetime]$relItem.published_at).ToString('yyyy-MM-dd') } else { '' }
+        Files      = $assetsList.Count
+        Pre        = if ($relItem.prerelease) { 'Yes' } else { '' }
+        Private    = if ($relItem._isPrivate) { 'Yes' } else { 'No' }
+    })
+}
+
+$pickedReleases = @($releaseMenu.ToArray() |
     Out-GridView -Title "Releases - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple)
 if ($pickedReleases.Count -eq 0) { Write-Host 'Nothing selected.'; return }
 
@@ -315,25 +326,26 @@ $selectedReleaseObjs = @($allReleases | Where-Object { $pickedKeys -contains "$(
 $currentOS = Get-CurrentOS
 Write-Host "[i] Current OS: $currentOS" -ForegroundColor DarkGray
 
-$assetRows = foreach ($rel in $selectedReleaseObjs) {
+$assetRows = New-Object System.Collections.Generic.List[object]
+foreach ($rel in $selectedReleaseObjs) {
     foreach ($asset in @($rel.assets)) {
-        [PSCustomObject]@{
+        if ($null -eq $asset) { continue }
+        $assetRows.Add([PSCustomObject]@{
             Repository = [string]$rel._repoName
             Version    = [string]$rel.tag_name
             File       = [string]$asset.name
-            OS         = Get-AssetPlatform $asset.name
-            Size       = Format-Size $asset.size
+            OS         = Get-AssetPlatform ([string]$asset.name)
+            Size       = Format-Size ([long]$asset.size)
             Downloads  = [int]$asset.download_count
             # Technical fields - hidden from the menu, required for download
-            _ApiUrl    = $asset.url
-            _Browser   = $asset.browser_download_url
+            _ApiUrl    = [string]$asset.url
+            _Browser   = [string]$asset.browser_download_url
             _Size      = [long]$asset.size
             _Private   = [bool]$rel._isPrivate
             _RelPath   = "$($rel._repoName)/$($rel.tag_name)"
-        }
+        })
     }
 }
-$assetRows = @($assetRows)
 
 if ($assetRows.Count -eq 0) {
     Write-Host "[!] Selected releases have no attached files (source archives only)." -ForegroundColor Yellow
@@ -342,19 +354,19 @@ if ($assetRows.Count -eq 0) {
 }
 
 # Show native-OS assets first
-$displayRows = @($assetRows |
+$displayRows = @($assetRows.ToArray() |
     Sort-Object -Property @{Expression={ if ($_.OS -eq $currentOS -or $_.OS -eq 'Any') { 0 } else { 1 } }},
                           @{Expression={ $_.Repository }}, @{Expression={ $_.Version }} |
     Select-Object Repository, Version, File, OS, Size, Downloads)
 
 if ($AllAssets) {
-    $selectedAssets = $assetRows
+    $selectedAssets = $assetRows.ToArray()
 } else {
     $pickedRows = @($displayRows |
         Out-GridView -Title "Files - select what to download (Ctrl for multiple) -> OK" -OutputMode Multiple)
     if ($pickedRows.Count -eq 0) { Write-Host 'Nothing selected.'; return }
     $pickedKeys = @($pickedRows | ForEach-Object { "$($_.Repository)|$($_.Version)|$($_.File)" })
-    $selectedAssets = @($assetRows | Where-Object {
+    $selectedAssets = @($assetRows.ToArray() | Where-Object {
         $pickedKeys -contains "$($_.Repository)|$($_.Version)|$($_.File)"
     })
 }
