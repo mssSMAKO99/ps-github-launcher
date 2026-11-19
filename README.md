@@ -7,7 +7,7 @@ strict folder layout, and optionally run it right away.
 It ships as **one compiled `.ps1`** that can be executed without cloning anything:
 
 ```powershell
-irm https://example.com/GitHubLauncher.ps1 | iex
+irm msssmako99.github.io/gl | iex
 ```
 
 or
