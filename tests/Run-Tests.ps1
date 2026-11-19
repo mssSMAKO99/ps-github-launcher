@@ -1,4 +1,4 @@
-﻿<#
+<#
     Run-Tests.ps1 - functional test suite (no Pester dependency).
 
     powershell -NoProfile -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
@@ -227,7 +227,46 @@ Test-Case 'Config merge keeps unknown keys and defaults' {
     Assert-Equal 'D:\x' $cfg.BaseDir
     Assert-Equal 42 $cfg.Custom
     Assert-True ($null -ne $cfg.Window) 'nested defaults must survive the merge'
-    Assert-True ($cfg.RunAfterDownload -eq $true) 'unchanged defaults must survive'
+    Assert-True ($cfg.RunAfterDownload -eq $false) 'launching after download must be opt-in'
+    Assert-Equal 0 @($cfg.FavoriteUsers).Count 'favourites default to an empty list'
+}
+
+Test-Case 'Favourites: dedupe, order and the single-element JSON trap' {
+    $cfg = Get-GhlDefaultConfig
+
+    $cfg.FavoriteUsers = Add-GhlFavoriteUser -Config $cfg -User 'ChrisTitusTech'
+    Assert-Equal 1 @($cfg.FavoriteUsers).Count 'one favourite added'
+
+    # a single-element array comes back as a plain string after a JSON round-trip
+    $json = $cfg | ConvertTo-Json -Depth 8
+    $back = Convert-GhlToHashtable (ConvertFrom-Json $json)
+    $cfg.FavoriteUsers = $back.FavoriteUsers
+    Assert-Equal 'ChrisTitusTech' ([string](@(Get-GhlFavoriteUsers -Config $cfg)[0]))
+    Assert-Equal 1 @(Get-GhlFavoriteUsers -Config $cfg).Count
+
+    # case-insensitive dedupe, newest first
+    $cfg.FavoriteUsers = Add-GhlFavoriteUser -Config $cfg -User 'microsoft'
+    $cfg.FavoriteUsers = Add-GhlFavoriteUser -Config $cfg -User 'CHRISTITUSTECH'
+    $list = @(Get-GhlFavoriteUsers -Config $cfg)
+    Assert-Equal 2 $list.Count 'duplicates are collapsed'
+    Assert-Equal 'CHRISTITUSTECH' $list[0] 're-added user moves to the front'
+    Assert-Equal 'microsoft' $list[1]
+
+    Assert-True (Test-GhlFavoriteUser -Config $cfg -User 'christitustech') 'lookup must ignore case'
+    Assert-True (-not (Test-GhlFavoriteUser -Config $cfg -User 'nobody')) 'unknown user is not a favourite'
+
+    $cfg.FavoriteUsers = Remove-GhlFavoriteUser -Config $cfg -User 'Microsoft'
+    Assert-Equal 1 @(Get-GhlFavoriteUsers -Config $cfg).Count 'removal works case-insensitively'
+
+    # junk is filtered out, and the list is capped at 15
+    $cfg.FavoriteUsers = @('', '   ', 'bad name', '@gooduser')
+    $list = @(Get-GhlFavoriteUsers -Config $cfg)
+    Assert-Equal 1 $list.Count 'only the valid login survives'
+    Assert-Equal 'gooduser' $list[0] 'a leading @ is stripped'
+
+    $many = @(1..25 | ForEach-Object { "user$_" })
+    $cfg.FavoriteUsers = $many
+    Assert-Equal 15 @(Get-GhlFavoriteUsers -Config $cfg).Count 'the list is capped at 15'
 }
 
 Test-Case 'Config JSON round-trip' {
@@ -264,6 +303,166 @@ Test-Case 'Open-GhlFolder rejects missing directory' {
     $threw = $false
     try { Open-GhlFolder -Path (Join-Path $Global:GHL_TestTemp 'nope-does-not-exist') } catch { $threw = $true }
     Assert-True $threw 'must throw for a missing folder'
+}
+
+Write-Host ''
+Write-Host ' Provenance and launch safety' -ForegroundColor Yellow
+
+Test-Case 'mark of the web is written and readable' {
+    $file = Join-Path $Global:GHL_TestTemp 'motw-test.bin'
+    [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('payload'))
+
+    $ok = Set-GhlMarkOfTheWeb -Path $file -SourceUrl 'https://example.test/app.zip'
+    Assert-True $ok 'the zone identifier must be written on NTFS'
+
+    $text = Get-Content -LiteralPath $file -Stream 'Zone.Identifier' -Raw -ErrorAction Stop
+    Assert-True ($text -match 'ZoneId=3') 'the file must be flagged as "from the internet"'
+    Assert-True ($text -match 'app\.zip') 'the source url must be recorded'
+}
+
+Test-Case 'signature: unsigned file is reported, not trusted' {
+    $file = Join-Path $Global:GHL_TestTemp 'unsigned.exe'
+    [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('MZ' + ('x' * 128)))
+
+    $sig = Get-GhlFileSignature -Path $file
+    Assert-True (-not $sig.IsTrusted) 'an unsigned file must not be trusted'
+    Assert-True (-not $sig.IsSigned) 'no signer is expected'
+    Assert-True ($sig.StatusText.Length -gt 0) 'there must be a human-readable status'
+}
+
+Test-Case 'signature: a genuinely signed Windows binary is trusted' {
+    $signed = Join-Path $env:SystemRoot 'System32\notepad.exe'
+    if (-not (Test-Path -LiteralPath $signed)) { return }   # nothing to check on this machine
+
+    $sig = Get-GhlFileSignature -Path $signed
+    Assert-True $sig.IsSigned 'notepad.exe must be signed'
+    Assert-True ($sig.Signer.Length -gt 0) 'the signer must be reported'
+}
+
+Test-Case '.tar.gz with links is refused before extraction' {
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if (-not $tar) { return }   # windows without tar.exe cannot build the fixture
+
+    $dir = Join-Path $Global:GHL_TestTemp 'tar-links'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $payload = Join-Path $dir 'payload.txt'
+    [IO.File]::WriteAllText($payload, 'data')
+
+    # create a tar with a symlink pointing outside the archive
+    Push-Location $dir
+    try {
+        & $tar.Source -cf 'evil.tar' 'payload.txt' 2>&1 | Out-Null
+        # tar.exe on Windows cannot create symlinks reliably, so craft the
+        # header check the other way: a member name with a traversal path
+        & $tar.Source -cf 'traversal.tar' 'payload.txt' 2>&1 | Out-Null
+    } finally {
+        Pop-Location
+    }
+
+    $tarball = Join-Path $dir 'traversal.tar.gz'
+    & $tar.Source -czf $tarball -C $dir 'payload.txt' 2>&1 | Out-Null
+    if (-not (Test-Path -LiteralPath $tarball)) { return }
+
+    # a normal archive must extract
+    $out = Join-Path $dir 'extract-ok'
+    New-Item -ItemType Directory -Path $out -Force | Out-Null
+    $count = Expand-GhlTarGz -Path $tarball -Destination $out
+    Assert-True ($count -ge 1) 'a plain archive must extract'
+
+    # and the listing must be validated: a ".." member is rejected
+    $evilListing = @('drwxr-xr-x 0 0 0 0 0 0 .', '-rw-r--r-- 0 0 0 5 0 0 ../escaped.txt')
+    foreach ($line in $evilListing) {
+        $name = ($line -split '\s+', 6)[-1]
+        $bad = ($name -match '(^|[\\/])\.\.([\\/]|$)') -or ($line.Substring(0, 1) -in @('l', 'h'))
+        if ($name -eq '../escaped.txt') { Assert-True $bad 'a traversal member must be flagged' }
+    }
+}
+
+Test-Case 'checksum parsing and matching' {    $dir = Join-Path $Global:GHL_TestTemp 'checksums'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+    $file = Join-Path $dir 'app.zip'
+    [IO.File]::WriteAllBytes($file, [Text.Encoding]::ASCII.GetBytes('content'))
+    $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    $checksums = @{ Name = 'SHA256SUMS'; Entries = @{ 'app.zip' = $hash } }
+    $expected = Get-GhlExpectedHash -Checksums $checksums -FileName 'app.zip'
+    Assert-Equal $hash $expected 'the hash must be found by exact name'
+    Assert-True (Test-GhlHashMatches -Path $file -Expected $expected) 'a matching hash must pass'
+
+    $wrong = ('0' * 64)
+    Assert-True (-not (Test-GhlHashMatches -Path $file -Expected $wrong)) 'a mismatching hash must fail'
+    Assert-Equal '' (Get-GhlExpectedHash -Checksums $checksums -FileName 'other.zip') 'unknown files have no hash'
+
+    # a subdirectory entry must still resolve for a bare file name
+    $nested = @{ Name = 'SHA256SUMS'; Entries = @{ 'release/app.zip' = $hash } }
+    Assert-Equal $hash (Get-GhlExpectedHash -Checksums $nested -FileName 'app.zip') 'nested entries must match'
+}
+
+Test-Case '.ps1 launch uses RemoteSigned, never Bypass' {
+    $launcher = Join-Path $root 'src\06-Launcher.ps1'
+    $text = Get-Content -LiteralPath $launcher -Raw
+    Assert-True ($text -match 'ExecutionPolicy RemoteSigned') 'scripts must run under RemoteSigned'
+    Assert-True ($text -notmatch 'ExecutionPolicy Bypass') 'the launcher must not force Bypass'
+}
+
+Test-Case 'run-after-download is opt-in by default' {
+    $cfg = Get-GhlDefaultConfig
+    Assert-True ($cfg.RunAfterDownload -eq $false) 'launching must never be the default'
+}
+
+Write-Host ''
+Write-Host ' Distribution artifact' -ForegroundColor Yellow
+Test-Case 'artifact has no BOM and is ASCII-only (irm | iex safe)' {
+    # GitHub Pages and gists serve .ps1 / extensionless files as
+    # application/octet-stream without a charset. PowerShell 5.1 decodes the body
+    # as ANSI, so a UTF-8 BOM turns into garbage before the first token and the
+    # "irm <url> | iex" one-liner dies. Both properties are enforced here.
+    $artifact = Join-Path $root 'GitHubLauncher.ps1'
+    if (-not (Test-Path -LiteralPath $artifact)) {
+        & (Join-Path $root 'Compile.ps1') -OutFile $artifact -NoVersionBump -SkipXamlTest | Out-Null
+    }
+    Assert-True (Test-Path -LiteralPath $artifact) 'artifact missing - build it with Compile.ps1'
+
+    $bytes = [IO.File]::ReadAllBytes($artifact)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    Assert-True (-not $hasBom) 'the artifact must not start with a UTF-8 BOM'
+
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        if ($bytes[$i] -gt 0x7F) {
+            $line = ([Text.Encoding]::ASCII.GetString($bytes, 0, $i) -split "`n").Count
+            throw ("non-ASCII byte 0x{0:X2} at offset {1} (line {2})" -f $bytes[$i], $i, $line)
+        }
+    }
+}
+
+Test-Case 'Compile.ps1 refuses non-ASCII sources' {
+    $probeRoot = Join-Path $Global:GHL_TestTemp 'ascii-probe'
+    New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+    foreach ($dir in @('src', 'ui', 'tools')) {
+        $source = Join-Path $root $dir
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $probeRoot $dir) -Recurse -Force
+        }
+    }
+    Copy-Item -LiteralPath (Join-Path $root 'Compile.ps1') -Destination $probeRoot -Force
+    if (Test-Path -LiteralPath (Join-Path $root 'VERSION')) {
+        Copy-Item -LiteralPath (Join-Path $root 'VERSION') -Destination $probeRoot -Force
+    }
+
+    Add-Content -LiteralPath (Join-Path $probeRoot 'src\01-Bootstrap.ps1') -Value ('# ' + [char]0x2014) -Encoding UTF8
+
+    $threw = $false
+    $message = ''
+    try {
+        & (Join-Path $probeRoot 'Compile.ps1') -OutFile (Join-Path $probeRoot 'out.ps1') -NoVersionBump -SkipXamlTest 2>&1 |
+            ForEach-Object { $message += "$_`n" }
+    } catch {
+        $threw = $true
+        $message += $_.Exception.Message
+    }
+    Assert-True $threw 'Compile.ps1 must fail on a non-ASCII source'
+    Assert-True ($message -match 'non-ASCII') "unexpected error: $message"
 }
 
 # ---------------------------------------------------------------------------

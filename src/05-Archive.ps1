@@ -120,7 +120,7 @@ function Expand-GhlTarGz {
     }
 
     # 1) validate member names before touching the disk
-    $listing = & $tar.Source -tf $Path 2>&1
+    $listing = & $tar.Source -tvf $Path 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "The .tar.gz archive could not be read: $listing"
     }
@@ -128,9 +128,19 @@ function Expand-GhlTarGz {
     if ($members.Count -gt $Global:GHL_MaxExtractFiles) {
         throw "Archive contains $($members.Count) entries, which exceeds the entry limit."
     }
+
     foreach ($m in $members) {
-        if ($m -match '(^|[\\/])\.\.([\\/]|$)' -or $m -match '^[\\/]' -or $m -match '^[A-Za-z]:') {
-            throw "Archive member rejected for unsafe path: $m"
+        # 'tar -t' prints a mode string first: 'l' = symlink, 'h' = hard link.
+        # Both can point outside the destination, so they are refused outright.
+        $mode = $m.Substring(0, [Math]::Min(1, $m.Length))
+        if ($mode -eq 'l' -or $mode -eq 'h') {
+            throw "Archive member rejected: links are not allowed in downloaded archives ($m)."
+        }
+
+        # the name is the last whitespace-separated field for the simple listing
+        $name = ($m -split '\s+', 6)[-1]
+        if ($name -match '(^|[\\/])\.\.([\\/]|$)' -or $name -match '^[\\/]' -or $name -match '^[A-Za-z]:') {
+            throw "Archive member rejected for unsafe path: $name"
         }
     }
 

@@ -1,4 +1,4 @@
-﻿<#
+<#
     Run-MockTests.ps1 - deterministic API / download / UI tests against a local mock.
 
     powershell -NoProfile -STA -ExecutionPolicy Bypass -File tests\Run-MockTests.ps1
@@ -66,7 +66,7 @@ Write-Host ' API against the mock' -ForegroundColor Yellow
 Test-Case 'GET /users/{u}/repos returns normalised repositories' {
     $r = Get-GhlUserRepos -User 'mockuser'
     Assert-True $r.Ok "request failed: $($r.Message)"
-    Assert-Equal 3 $r.Data.Count
+    Assert-Equal 5 $r.Data.Count
     Assert-Equal 'demo-tool' $r.Data[0].Name
     Assert-Equal 'mockuser' $r.Data[0].Owner
     Assert-Equal 123 $r.Data[0].Stars
@@ -176,16 +176,23 @@ if ($NoUi) {
     $scenarios = @(
         @{ Repo = 'demo-tool'; Label = 'release asset -> exe -> marker'; AutoRun = $false },
         @{ Repo = 'no-release'; Label = 'no releases -> source archive -> marker'; AutoRun = $false },
-        @{ Repo = 'script-tool'; Label = 'run after download -> script launched'; AutoRun = $true }
+        @{ Repo = 'script-tool'; Label = 'run after download -> script blocked by RemoteSigned'; AutoRun = $true },
+        @{ Repo = 'second-tool'; Batch = $true; Label = 'multi-select -> sequential batch' }
     )
 
     foreach ($scenario in $scenarios) {
         $uiBase = Join-Path $tempRoot ('ui-' + $scenario.Repo)
 
+        $extra = @()
+        if ($scenario.AutoRun) { $extra += '-AutoRun' }
+        if ($scenario.Batch) { $extra += '-BatchRepos'; $extra += 'demo-tool,second-tool,third-tool' }
+
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = 'powershell.exe'
-        $psi.Arguments = '-NoProfile -STA -ExecutionPolicy Bypass -File "{0}" -User mockuser -Repo "{1}" -BaseDir "{2}"{3}' -f `
-            $uiScript, $scenario.Repo, $uiBase, $(if ($scenario.AutoRun) { ' -AutoRun' } else { '' })
+        $psi.Arguments = (@(
+                '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $uiScript,
+                '-User', 'mockuser', '-Repo', $scenario.Repo, '-BaseDir', $uiBase
+            ) + $extra | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } }) -join ' '
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true

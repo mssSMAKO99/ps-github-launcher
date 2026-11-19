@@ -5,8 +5,14 @@
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
-        FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}" FontSize="12"
+        FontFamily="Segoe UI" Foreground="{DynamicResource TextBrush}" FontSize="12"
         ShowInTaskbar="False">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <!-- GHL_STYLES_INJECT -->
+        </ResourceDictionary>
+    </Window.Resources>
 
     <Border CornerRadius="12" Background="{StaticResource Bg0Brush}"
             BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="18">

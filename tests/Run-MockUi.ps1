@@ -1,4 +1,4 @@
-﻿<#
+<#
     Run-MockUi.ps1 - window-level end-to-end test against the mock API.
     Expects tests\Run-MockTests.ps1 to have exported $env:GHL_API_BASE.
 #>
@@ -8,7 +8,8 @@ param(
     [string]$User = 'mockuser',
     [string]$Repo = 'demo-tool',
     [string]$BaseDir,
-    [switch]$AutoRun
+    [switch]$AutoRun,
+    [string]$BatchRepos = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,6 +31,7 @@ $Global:GhlUiTestUser = $User
 $Global:GhlUiTestRepo = $Repo
 $Global:GhlUiTestBase = $BaseDir
 $Global:GhlUiTestAutoRun = [bool]$AutoRun
+$Global:GhlUiTestBatch = $BatchRepos
 
 $resultFile = Join-Path ([IO.Path]::GetTempPath()) ('ghl-mockui-result-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
 $script:Stage = 'boot'
@@ -55,9 +57,25 @@ $automation = {
                 $st = $Global:GhlState
                 $ui = $st.UI
 
+                # the launch confirmation is modal: click "Run" for the test
+                if ($st.ConfirmWindow) {
+                    $win = $st.ConfirmWindow
+                    $stack = $win.Content.Child
+                    foreach ($child in $stack.Children) {
+                        if ($child -is [Windows.Controls.StackPanel]) {
+                            foreach ($b in $child.Children) {
+                                if ($b -is [Windows.Controls.Button] -and [string]$b.Content -eq 'Run') {
+                                    Write-Host 'mock: confirming launch'
+                                    $b.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 switch ($script:Stage) {
                     'boot' {
-                        $ui.txtUser.Text = $script:TestUser
+                        $ui.cbUser.Text = $script:TestUser
                         $ui.txtBaseDir.Text = $script:TestBaseDir
                         $st.Config.BaseDir = $script:TestBaseDir
                         $ui.chkRunAfter.IsChecked = [bool]$script:TestAutoRun
@@ -75,6 +93,27 @@ $automation = {
                     }
 
                     'selecting' {
+                        if ($Global:GhlUiTestBatch) {
+                            # multi-select: mark every requested repository and press Download once
+                            $wanted = @($Global:GhlUiTestBatch -split ',' | ForEach-Object { $_.Trim() })
+                            $ui.dgRepos.SelectedItems.Clear()
+                            $found = 0
+                            foreach ($name in $wanted) {
+                                foreach ($r in $st.AllRepos) {
+                                    if ($r.Name -eq $name -and $r.Owner -eq $script:TestUser) {
+                                        [void]$ui.dgRepos.SelectedItems.Add($r)
+                                        $found++
+                                        break
+                                    }
+                                }
+                            }
+                            if ($found -ne $wanted.Count) { throw "only $found of $($wanted.Count) repositories were selectable" }
+                            $script:Selected = $found
+                            $script:Stage = 'batch'
+                            $ui.btnDownload.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                            return
+                        }
+
                         $row = $null
                         foreach ($r in $st.AllRepos) {
                             if ($r.Name -eq $script:TestRepo -and $r.Owner -eq $script:TestUser) { $row = $r; break }
@@ -85,6 +124,27 @@ $automation = {
                             throw 'selecting a row did not update the details panel'
                         }
                         $script:Stage = 'release'
+                    }
+
+                    'batch' {
+                        if (-not $st.Busy -and -not $st.Queue) {
+                            # everything settled: check each folder
+                            $done = 0
+                            $skipped = 0
+                            foreach ($name in @($Global:GhlUiTestBatch -split ',')) {
+                                $n = $name.Trim()
+                                $dir = Get-GhlRepoDir -BaseDir $script:TestBaseDir -User $script:TestUser -Repo $n
+                                $marker = Join-Path $dir '.ghl.json'
+                                if (Test-Path -LiteralPath $marker) {
+                                    $done++
+                                } else {
+                                    $skipped++
+                                }
+                            }
+                            $script:BatchDone = $done
+                            $script:BatchSkipped = $skipped
+                            $script:Stage = 'verify'
+                        }
                     }
 
                     'release' {
@@ -131,18 +191,41 @@ $automation = {
                     }
 
                     'verify' {
+                        if ($Global:GhlUiTestBatch) {
+                            # third-tool only ships a Linux tarball -> must be skipped
+                            if ($script:BatchDone -ne 2) { throw "expected 2 downloaded repos, got $($script:BatchDone)" }
+                            if ($script:BatchSkipped -ne 1) { throw "expected 1 skipped repo, got $($script:BatchSkipped)" }
+
+                            $badge = ''
+                            foreach ($r in $st.AllRepos) {
+                                if ($r.Name -eq 'demo-tool') { $badge = $r.Status }
+                            }
+                            if ($badge -ne 'Downloaded') { throw "badge for demo-tool is '$badge'" }
+                            $script:DestDir = $script:TestBaseDir
+                            $script:Badge = "$($script:BatchDone) done / $($script:BatchSkipped) skipped"
+                            $script:ReleaseTag = '(batch)'
+                            $script:AssetName = "$($script:Selected) selected"
+                            $script:MarkerTag = ''
+                            $script:Stage = 'done'
+                            return
+                        }
+
                         $dir = [string]$st.LastDownloadDir
                         $script:DestDir = $dir
 
                         if ($script:TestRepo -eq 'script-tool') {
-                            # the archive only contains run.ps1, which must have been started
+                            # security property: a downloaded .ps1 carries the zone
+                            # mark, so RemoteSigned refuses to run it. The test asserts
+                            # that it is *not* silently executed.
                             $launched = Join-Path $dir 'launched.txt'
-                            if (-not (Test-Path -LiteralPath $launched)) {
-                                if ((Get-Date) -gt $script:Deadline) {
-                                    throw 'the downloaded script was not launched'
-                                }
-                                return
+                            if (Test-Path -LiteralPath $launched) {
+                                throw 'a downloaded script with the zone mark must not run under RemoteSigned'
                             }
+                            $ps1 = Get-ChildItem -LiteralPath $dir -Recurse -File -Filter '*.ps1' -Force | Select-Object -First 1
+                            if (-not $ps1) { throw 'the script was not extracted' }
+                            $zone = @(Get-Content -LiteralPath $ps1.FullName -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue)
+                            if (-not $zone) { throw "$($ps1.Name) has no Zone.Identifier stream" }
+                            $script:Motw = 'blocked-by-policy'
                         }
 
                         if ($script:TestRepo -eq 'demo-tool') {
@@ -156,6 +239,11 @@ $automation = {
                             if ([string]$markerPre.Executable -match 'unins') {
                                 throw "the uninstaller was chosen as the launch target: $($markerPre.Executable)"
                             }
+                            # extracted executables must carry the "from the internet" mark
+                            $zone = @(Get-Content -LiteralPath $exe -Stream 'Zone.Identifier' -ErrorAction SilentlyContinue)
+                            if (-not $zone) { throw 'DemoTool.exe has no Zone.Identifier stream' }
+                            if (($zone -join "`n") -notmatch 'ZoneId=3') { throw 'ZoneId must be 3 (internet)' }
+                            $script:Motw = 'yes'
                         } elseif ($script:TestRepo -eq 'no-release') {
                             $readme = Get-ChildItem -LiteralPath $dir -Recurse -File -Filter 'README.md' -Force
                             if (-not $readme) { throw 'the source archive was not unpacked' }
@@ -203,14 +291,17 @@ $automation = {
     $tick.Start()
 }
 
-$configPath = Join-Path $env:LOCALAPPDATA 'GitHubLauncher\config.json'
+# never touch the user's real settings: point the app at a throwaway folder
+$env:GHL_CONFIG_DIR = Join-Path $env:TEMP ('ghl-cfg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $env:GHL_CONFIG_DIR -Force | Out-Null
+$configPath = Join-Path $env:GHL_CONFIG_DIR 'config.json'
 $configBackup = $null
 if (Test-Path -LiteralPath $configPath) { $configBackup = [IO.File]::ReadAllText($configPath) }
 
 try {
     Start-GitHubLauncher -AutomationScript $automation
 } finally {
-    if ($null -ne $configBackup) { [IO.File]::WriteAllText($configPath, $configBackup) }
+    try { Remove-Item -LiteralPath $env:GHL_CONFIG_DIR -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
 if (-not (Test-Path -LiteralPath $resultFile)) { throw 'the window produced no result' }

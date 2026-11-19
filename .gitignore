@@ -1,6 +1,5 @@
 # build output
 GitHubLauncher.ps1.bak
-PLAN.md
 
 # local captures / logs
 tests/.offline.log
@@ -8,6 +7,7 @@ tests/.online.log
 tests/.mock.log
 tests/.ui.log
 tests/.ui2.log
+tests/.repeat.log
 tools/ui-screenshot.png
 tools/*.png.tmp
 

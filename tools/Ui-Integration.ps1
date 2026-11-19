@@ -1,4 +1,4 @@
-﻿<#
+<#
     Ui-Integration.ps1
     End-to-end check: boots the real window, searches a user, picks a repository,
     waits for its release list and downloads the smallest compatible asset.
@@ -55,7 +55,7 @@ $automation = {
                 switch ($script:Stage) {
 
                     'boot' {
-                        $ui.txtUser.Text = $script:TestUser
+                        $ui.cbUser.Text = $script:TestUser
                         $ui.txtBaseDir.Text = $script:TestBaseDir
                         $st.Config.BaseDir = $script:TestBaseDir
                         $ui.chkRunAfter.IsChecked = $false
@@ -177,7 +177,10 @@ $Global:GhlUiTestRepo = $Repo
 $Global:GhlUiTestBase = $BaseDir
 
 # keep the integration run away from the real settings file
-$configPath = Join-Path $env:LOCALAPPDATA 'GitHubLauncher\config.json'
+# never touch the user's real settings: point the app at a throwaway folder
+$env:GHL_CONFIG_DIR = Join-Path $env:TEMP ('ghl-cfg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $env:GHL_CONFIG_DIR -Force | Out-Null
+$configPath = Join-Path $env:GHL_CONFIG_DIR 'config.json'
 $configBackup = $null
 if (Test-Path -LiteralPath $configPath) {
     $configBackup = [IO.File]::ReadAllText($configPath)
@@ -186,7 +189,7 @@ if (Test-Path -LiteralPath $configPath) {
 try {
     Start-GitHubLauncher -AutomationScript $automation
 } finally {
-    if ($null -ne $configBackup) { [IO.File]::WriteAllText($configPath, $configBackup) }
+    try { Remove-Item -LiteralPath $env:GHL_CONFIG_DIR -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 }
 
 if (-not (Test-Path -LiteralPath $resultFile)) {

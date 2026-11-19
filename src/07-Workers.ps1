@@ -1,4 +1,4 @@
-﻿<#
+<#
     07-Workers.ps1
     Script text executed inside the RunspacePool. Workers never touch WPF -
     they publish plain-data events into $Sync.Events and let the UI thread
@@ -117,6 +117,55 @@ try {
         New-Item -ItemType Directory -Path $dest -Force | Out-Null
     }
 
+    # batch mode passes no Url: resolve the best Windows asset for this repo here,
+    # inside the worker, so the UI thread never waits on the API
+    if (-not $Job.Url) {
+        $Sync.Phase = 'release'
+        $Sync.StatusText = "Resolving $($Job.Repo)..."
+
+        if ($mode -eq 'Source') {
+            $src = New-GhlSourceArchive -User $Job.User -Repo $Job.Repo
+            $Job.Url = $src.Url
+            $fileName = $src.FileName
+        } else {
+            $rel = Get-GhlLatestRelease -User $Job.User -Repo $Job.Repo -Token $Job.Token `
+                -IncludePrerelease:([bool]$Job.IncludePrerelease)
+
+            if (-not $rel.Ok -and $rel.Kind -eq 'norelease') {
+                # no release at all: fall back to the source archive
+                $mode = 'Source'
+                $Job.Mode = 'Source'
+                $src = New-GhlSourceArchive -User $Job.User -Repo $Job.Repo
+                $Job.Url = $src.Url
+                $fileName = $src.FileName
+            } elseif (-not $rel.Ok) {
+                throw ($rel.Message)
+            } else {
+                $best = $null
+                $bestScore = [int]::MinValue
+                foreach ($a in @($rel.Data.Assets)) {
+                    if (-not $a.Compatible) { continue }
+                    if ([int]$a.Score -gt $bestScore) { $bestScore = [int]$a.Score; $best = $a }
+                }
+                if (-not $best) {
+                    $ex = New-Object System.Exception("No Windows-compatible asset in $($rel.Data.Tag).")
+                    $ex.Data['Kind'] = 'noasset'
+                    throw $ex
+                }
+                $Job.Url = [string]$best.Url
+                $fileName = [string]$best.Name
+                $Job.Tag = [string]$rel.Data.Tag
+
+                try {
+                    $tempDir = Join-Path $env:TEMP ('ghl-cs-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+                    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+                    $Job.Checksums = Get-GhlPublishedChecksums -Release $rel.Data -Token $Job.Token -TempDir $tempDir
+                    Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+                } catch { }
+            }
+        }
+    }
+
     # archives are staged outside the repository folder: a copy sitting next to
     # the extracted tree would break the "unwrap the single root folder" step
     $kind = Get-GhlArchiveKind -Path $fileName
@@ -141,6 +190,25 @@ try {
     $Sync.ProgressPercent = -1.0
     $Sync.SpeedBps = 0.0
 
+    # provenance: mark the file as downloaded and, when the release publishes
+    # checksums, refuse to continue if the hash does not match
+    [void](Set-GhlMarkOfTheWeb -Path $target -SourceUrl ([string]$Job.Url))
+
+    $hashNote = ''
+    if ($Job.Checksums -and $Job.Checksums.Entries) {
+        $expected = Get-GhlExpectedHash -Checksums $Job.Checksums -FileName $fileName
+        if ($expected) {
+            if (-not (Test-GhlHashMatches -Path $target -Expected $expected)) {
+                $ex = New-Object System.Exception(
+                    "Checksum mismatch for $fileName - the download does not match $($Job.Checksums.Name).")
+                $ex.Data['Kind'] = 'hashmismatch'
+                throw $ex
+            }
+            $hashNote = $expected
+            $Sync.StatusText = "Checksum verified for $fileName"
+        }
+    }
+
     $exePath = ''
     $candidates = @()
 
@@ -160,6 +228,13 @@ try {
         }
 
         $candidates = @(Find-GhlExecutables -Root $dest -RepoName ([string]$Job.Repo) -IncludeScripts)
+
+        # the archive sat in a temporary folder; what the user will actually run
+        # are the extracted files, so those are the ones that get marked
+        foreach ($file in @(Get-ChildItem -LiteralPath $dest -Recurse -File -Force -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in @('.exe', '.msi', '.ps1', '.bat', '.cmd') })) {
+            [void](Set-GhlMarkOfTheWeb -Path $file.FullName -SourceUrl ([string]$Job.Url))
+        }
     } else {
         $candidates = @(Find-GhlExecutables -Root $dest -RepoName ([string]$Job.Repo) -IncludeScripts |
             Where-Object { $_.FullPath -eq $target })
@@ -204,6 +279,7 @@ try {
         User        = [string]$Job.User
         Bytes       = $dl.Bytes
         AutoRun     = [bool]$Job.AutoRun
+        Hash        = $hashNote
     })
 } catch {
     $info = Get-GhlFailureInfo $_
@@ -275,6 +351,9 @@ function Get-GhlWorkerNames {    return @(
         'Get-GhlRepoDir', 'Get-GhlMarkerPath', 'Set-GhlMarker', 'Read-GhlMarker',
         'Get-GhlRepoFileList', 'Get-GhlRepoState', 'ConvertTo-GhlSafeName',
         'Start-GhlItem', 'Open-GhlFolder',
-        'Write-GhlLog', 'Format-GhlSize', 'Format-GhlDuration', 'Get-GhlFreeSpace'
+        'Write-GhlLog', 'Format-GhlSize', 'Format-GhlDuration', 'Get-GhlFreeSpace',
+        'Get-GhlAppDir',
+        'Set-GhlMarkOfTheWeb', 'Get-GhlFileSignature', 'Get-GhlPublishedChecksums',
+        'Test-GhlHashMatches', 'Get-GhlExpectedHash'
     )
 }

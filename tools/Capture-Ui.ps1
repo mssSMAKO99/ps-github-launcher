@@ -1,4 +1,4 @@
-﻿<#
+<#
     Capture-Ui.ps1 - renders the real window against the mock API and saves a PNG.
     Intended for visual review during development.
 
@@ -12,6 +12,7 @@ param(
     [string]$Repo = 'demo-tool',
     [string]$Out = (Join-Path $PSScriptRoot 'ui-screenshot.png'),
     [switch]$AfterDownload,
+    [switch]$Settings,
     [string]$Background = ''
 )
 
@@ -38,14 +39,20 @@ $Global:GhlShotRepo = $Repo
 $Global:GhlShotOut = $Out
 $Global:GhlShotDownload = [bool]$AfterDownload
 $Global:GhlShotBackground = [string]$Background
+$Global:GhlShotSettings = [bool]$Settings
+$Global:GhlShotBase = Join-Path $env:TEMP ('ghl-shot-downloads-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 
 $automation = {
     param($window)
 
     $st = $Global:GhlState
     $ui = $st.UI
-    $ui.txtUser.Text = [string]$Global:GhlShotUser
-    $ui.txtBaseDir.Text = (Join-Path $env:TEMP 'ghl-shot-downloads')
+    $ui.cbUser.Text = [string]$Global:GhlShotUser
+    # isolate the download folder: the UI textbox alone is not enough, all paths
+    # are resolved from $st.Config.BaseDir, so set both
+    $ui.txtBaseDir.Text = [string]$Global:GhlShotBase
+    $st.Config.BaseDir = [string]$Global:GhlShotBase
+    $ui.txtFooterInfo.Text = "Downloads: $($Global:GhlShotBase)"
     $ui.txtBg.Text = ''
     $ui.chkRunAfter.IsChecked = $false
 
@@ -99,18 +106,36 @@ $automation = {
                     }
                     'settle' {
                         if ((Get-Date) -ge $script:SettleUntil) {
+                            if ($Global:GhlShotSettings -and -not $script:SettingsShown) {
+                                # give the overlay a layout pass before rendering
+                                $script:SettingsShown = $true
+                                Show-GhlSettings -Show $true
+                                $script:SettleUntil = (Get-Date).AddMilliseconds(700)
+                                return
+                            }
                             $ui.Window.Topmost = $true
                             $ui.Window.Activate() | Out-Null
                             Start-Sleep -Milliseconds 250
 
                             # render the window itself: no DPI or occlusion surprises
                             $win = $ui.Window
+
+                            # pending bindings and selection visuals are only applied
+                            # during a layout pass; without this the capture shows
+                            # stale text and unhighlighted rows
+                            $win.UpdateLayout()
+                            $win.Dispatcher.Invoke([action]{}, [Windows.Threading.DispatcherPriority]::Render)
+                            $win.UpdateLayout()
+
                             $width = [int][Math]::Ceiling($win.ActualWidth)
                             $height = [int][Math]::Ceiling($win.ActualHeight)
                             if ($width -lt 10 -or $height -lt 10) { throw "window has no size ($width x $height)" }
 
                             $rtb = New-Object Windows.Media.Imaging.RenderTargetBitmap(
                                 $width, $height, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+                            # render twice: the first pass can catch the compositor
+                            # mid-update and produces torn text in the capture
+                            $rtb.Render($win)
                             $rtb.Render($win)
 
                             $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder
@@ -121,8 +146,7 @@ $automation = {
                             $ui.Window.Topmost = $false
                             $script:Stage = 'done'
                         }
-                    }
-                }
+                    }                }
 
                 if ((Get-Date) -gt $script:Deadline) {
                     $s.Stop()
@@ -142,17 +166,23 @@ $automation = {
     $tick.Start()
 }
 
-$configPath = Join-Path $env:LOCALAPPDATA 'GitHubLauncher\config.json'
+# never touch the user's real settings: point the app at a throwaway folder
+$env:GHL_CONFIG_DIR = Join-Path $env:TEMP ('ghl-cfg-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Path $env:GHL_CONFIG_DIR -Force | Out-Null
+$configPath = Join-Path $env:GHL_CONFIG_DIR 'config.json'
 $configBackup = $null
 if (Test-Path -LiteralPath $configPath) { $configBackup = [IO.File]::ReadAllText($configPath) }
 
 try {
     Start-GitHubLauncher -AutomationScript $automation
 } finally {
-    if ($null -ne $configBackup) { [IO.File]::WriteAllText($configPath, $configBackup) }
+    try { Remove-Item -LiteralPath $env:GHL_CONFIG_DIR -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     Stop-GhlMockApi -Session $mock
     Remove-Item Env:\GHL_API_BASE -ErrorAction SilentlyContinue
     try { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    if ($Global:GhlShotBase -and (Test-Path -LiteralPath $Global:GhlShotBase)) {
+        try { Remove-Item -LiteralPath $Global:GhlShotBase -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
 }
 
 if (Test-Path -LiteralPath $Out) {
