@@ -1,0 +1,445 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="GitHub Launcher"
+        Width="1280" Height="820" MinWidth="1120" MinHeight="680"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display" SnapsToDevicePixels="True"
+        FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}"
+        FontSize="12">
+
+    <Window.Resources>
+        <!-- makes the invisible edge-resize thumbs hit-testable -->
+        <Style TargetType="Thumb">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="Transparent"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Border x:Name="RootBorder" CornerRadius="12" Background="{StaticResource Bg0Brush}"
+                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+            <Grid>
+                <!-- ===== background layers ===== -->
+                <Image x:Name="imgBackground" Stretch="UniformToFill" Opacity="1" IsHitTestVisible="False"/>
+                <Rectangle x:Name="rectDim" Fill="#0D1117" Opacity="0" IsHitTestVisible="False"/>
+
+                <!-- ===== content ===== -->
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="46"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="72"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- ============ TITLEBAR ============ -->
+                    <Border x:Name="TitleBar" Grid.Row="0" Background="Transparent">
+                        <Grid Margin="16,0,10,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <Image x:Name="imgLogo" Width="20" Height="20" Margin="0,0,10,0"
+                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                                <TextBlock Text="GitHub Launcher" FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                                <Border Background="#21262D" CornerRadius="6" Padding="7,2"
+                                        Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="txtBuildTag" Text="dev" FontSize="9.5"
+                                               Foreground="{StaticResource TextDimBrush}"/>
+                                </Border>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="btnMin" Style="{StaticResource TitleButton}"
+                                        Content="&#xE921;" ToolTip="Minimize"/>
+                                <Button x:Name="btnMax" Style="{StaticResource TitleButton}"
+                                        Content="&#xE922;" ToolTip="Maximize" Margin="2,0"/>
+                                <Button x:Name="btnClose" Style="{StaticResource CloseTitleButton}"
+                                        Content="&#xE8BB;" ToolTip="Close"/>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- ============ BODY ============ -->
+                    <Grid Grid.Row="1" Margin="16,2,16,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="292"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="336"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- SETTINGS -->
+                        <Border Grid.Column="0" Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,12,10,12">
+                                <StackPanel>
+                                    <TextBlock Text="GITHUB ACCOUNT" Style="{StaticResource SectionHeader}"/>
+                                    <TextBox x:Name="txtUser" Style="{StaticResource GhlTextBox}"
+                                             ToolTip="GitHub username or organization"/>
+                                    <PasswordBox x:Name="txtToken" Style="{StaticResource GhlPasswordBox}"
+                                                 Margin="0,8,0,0" ToolTip="Personal access token (optional)"/>
+                                    <CheckBox x:Name="chkRememberToken" Style="{StaticResource GhlCheckBox}"
+                                              Content="Remember token (DPAPI encrypted)"/>
+                                    <Button x:Name="btnSearch" Style="{StaticResource PrimaryButton}"
+                                            Content="Load repositories" Margin="0,12,0,0"/>
+                                    <TextBlock x:Name="txtRateLimit" Text="" Style="{StaticResource Hint}"
+                                               Margin="0,10,0,0"/>
+
+                                    <Separator Style="{StaticResource HLine}"/>
+
+                                    <TextBlock Text="DOWNLOAD" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock Text="Base folder" Style="{StaticResource Label}" Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txtBaseDir" Style="{StaticResource GhlTextBox}"/>
+                                        <Button x:Name="btnBrowseBase" Grid.Column="1" Content="..."
+                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                MinWidth="30" ToolTip="Choose folder"/>
+                                    </Grid>
+                                    <CheckBox x:Name="chkRunAfter" Style="{StaticResource GhlCheckBox}"
+                                              Content="Run immediately after download"/>
+                                    <CheckBox x:Name="chkPrerelease" Style="{StaticResource GhlCheckBox}"
+                                              Content="Include pre-release versions"/>
+                                    <Button x:Name="btnOpenBase" Style="{StaticResource GhlButton}"
+                                            Content="Open base folder" Margin="0,10,0,0"/>
+
+                                    <Separator Style="{StaticResource HLine}"/>
+
+                                    <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
+                                               Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txtBg" Style="{StaticResource GhlTextBox}"/>
+                                        <Button x:Name="btnBrowseBg" Grid.Column="1" Content="..."
+                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                MinWidth="30" ToolTip="Choose image"/>
+                                    </Grid>
+                                    <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%" Style="{StaticResource Label}"
+                                               Margin="0,10,0,0"/>
+                                    <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
+                                            Minimum="0" Maximum="90" Value="55"
+                                            SmallChange="1" LargeChange="10"/>
+                                    <Button x:Name="btnClearBg" Style="{StaticResource GhlButton}"
+                                            Content="Reset background" Margin="0,10,0,0"/>
+
+                                    <TextBlock x:Name="txtFooterInfo" Style="{StaticResource Hint}" Margin="0,14,0,0"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+
+                        <!-- REPO LIST -->
+                        <Border Grid.Column="1" Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <Grid Margin="14,12,14,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Grid>
+                                        <TextBox x:Name="txtFilter" Style="{StaticResource GhlTextBox}"
+                                                 ToolTip="Filter by name, description or language (Ctrl+F)"/>
+                                        <TextBlock x:Name="txtFilterPlaceholder"
+                                                   Text="Filter repositories..." IsHitTestVisible="False"
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12"
+                                                   VerticalAlignment="Center" Margin="11,0,0,0"/>
+                                    </Grid>
+
+                                    <Grid x:Name="spinner" Grid.Column="1" Width="16" Height="16"
+                                          Margin="10,0,4,0" Visibility="Collapsed">
+                                        <Ellipse Stroke="#2D333B" StrokeThickness="2"/>
+                                        <Ellipse Stroke="{StaticResource AccentBrush}" StrokeThickness="2"
+                                                 StrokeDashArray="1.4 2.6" StrokeDashCap="Round"
+                                                 RenderTransformOrigin="0.5,0.5">
+                                            <Ellipse.RenderTransform>
+                                                <RotateTransform Angle="0"/>
+                                            </Ellipse.RenderTransform>
+                                            <Ellipse.Triggers>
+                                                <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                    <BeginStoryboard>
+                                                        <Storyboard>
+                                                            <DoubleAnimation
+                                                                Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                From="0" To="360" Duration="0:0:0.9"
+                                                                RepeatBehavior="Forever"/>
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </EventTrigger>
+                                            </Ellipse.Triggers>
+                                        </Ellipse>
+                                    </Grid>
+
+                                    <Button x:Name="btnRefresh" Grid.Column="2" Style="{StaticResource SmallButton}"
+                                            Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                            Padding="9,7" ToolTip="Reload repositories (F5)"/>
+                                    <TextBlock x:Name="txtCount" Grid.Column="3" Style="{StaticResource Hint}"
+                                               VerticalAlignment="Center" Margin="10,0,0,0" Text="—"/>
+                                </Grid>
+
+                                <DataGrid x:Name="dgRepos" Grid.Row="1" Margin="4,0,4,4"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False"
+                                          IsReadOnly="True" SelectionMode="Single" SelectionUnit="FullRow"
+                                          HeadersVisibility="Column" GridLinesVisibility="None"
+                                          Background="Transparent" BorderThickness="0" RowHeight="40"
+                                          RowHeaderWidth="0" ColumnHeaderHeight="34"
+                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                          VirtualizingPanel.IsVirtualizing="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          EnableRowVirtualization="True"
+                                          ColumnHeaderStyle="{StaticResource GhlColumnHeader}"
+                                          RowStyle="{StaticResource GhlRow}"
+                                          CellStyle="{StaticResource GhlCell}">
+                                    <DataGrid.Columns>
+                                        <DataGridTemplateColumn Header="Repository" Width="*" SortMemberPath="Name">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel VerticalAlignment="Center" Margin="10,0,4,0">
+                                                        <TextBlock Text="{Binding Name}" FontSize="12.5"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                        <TextBlock Text="{Binding Owner}" FontSize="10"
+                                                                   Foreground="{StaticResource TextDimBrush}"
+                                                                   TextTrimming="CharacterEllipsis"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+
+                                        <DataGridTextColumn Header="&#x2605;" Width="76" SortMemberPath="Stars"
+                                                            Binding="{Binding Stars}">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+                                                    <Setter Property="HorizontalAlignment" Value="Right"/>
+                                                    <Setter Property="Margin" Value="0,0,12,0"/>
+                                                    <Setter Property="Foreground" Value="{StaticResource WarnBrush}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
+                                        <DataGridTextColumn Header="Language" Width="118" SortMemberPath="Language"
+                                                            Binding="{Binding Language}">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
+                                        <DataGridTextColumn Header="Updated" Width="104" SortMemberPath="Updated"
+                                                            Binding="{Binding UpdatedText}">
+                                            <DataGridTextColumn.ElementStyle>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}"/>
+                                                    <Setter Property="FontSize" Value="11"/>
+                                                </Style>
+                                            </DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
+
+                                        <DataGridTemplateColumn Header="Status" Width="128" SortMemberPath="Status">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Border x:Name="badge" CornerRadius="8" Padding="8,2.5"
+                                                            HorizontalAlignment="Left" Margin="4,0,0,0"
+                                                            Background="#21262D">
+                                                        <TextBlock x:Name="badgeText" Text="{Binding Status}"
+                                                                   FontSize="10" Foreground="#8B949E"/>
+                                                    </Border>
+                                                    <DataTemplate.Triggers>
+                                                        <DataTrigger Binding="{Binding Status}" Value="Downloaded">
+                                                            <Setter TargetName="badge" Property="Background"
+                                                                    Value="{StaticResource SuccessSoftBrush}"/>
+                                                            <Setter TargetName="badgeText" Property="Foreground"
+                                                                    Value="{StaticResource SuccessBrush}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Status}" Value="Partial">
+                                                            <Setter TargetName="badge" Property="Background"
+                                                                    Value="{StaticResource WarnSoftBrush}"/>
+                                                            <Setter TargetName="badgeText" Property="Foreground"
+                                                                    Value="{StaticResource WarnBrush}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                            <Setter TargetName="badge" Property="Background"
+                                                                    Value="{StaticResource DangerSoftBrush}"/>
+                                                            <Setter TargetName="badgeText" Property="Foreground"
+                                                                    Value="{StaticResource DangerBrush}"/>
+                                                        </DataTrigger>
+                                                    </DataTemplate.Triggers>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+
+                                <StackPanel x:Name="pnlEmpty" Grid.Row="1" VerticalAlignment="Center"
+                                            HorizontalAlignment="Center" Visibility="Visible">
+                                    <TextBlock x:Name="txtEmptyTitle" Text="No repositories loaded" FontSize="13"
+                                               HorizontalAlignment="Center" Foreground="{StaticResource TextDimBrush}"/>
+                                    <TextBlock x:Name="txtEmptyHint" Text="Enter a GitHub username and press Load"
+                                               FontSize="11" Margin="0,6,0,0" HorizontalAlignment="Center"
+                                               Foreground="#5B6470"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- DETAILS -->
+                        <Border Grid.Column="2" Style="{StaticResource PanelBorder}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Margin="14,12,14,0">
+                                    <TextBlock x:Name="txtRepoName" Text="No repository selected"
+                                               FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="txtRepoDesc" Text="" FontSize="11.5" Margin="0,6,0,0"
+                                               Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"
+                                               MaxHeight="96"/>
+                                    <TextBlock x:Name="txtRepoMeta" Text="" FontSize="10.5" Margin="0,8,0,0"
+                                               Foreground="#5B6470" TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="1" Margin="14,14,14,0">
+                                    <TextBlock Text="DOWNLOAD MODE" Style="{StaticResource SectionHeader}"/>
+                                    <RadioButton x:Name="rbModeRelease" Style="{StaticResource GhlRadio}"
+                                                 GroupName="dlmode" Content="Latest release assets"
+                                                 IsChecked="True"/>
+                                    <RadioButton x:Name="rbModeSource" Style="{StaticResource GhlRadio}"
+                                                 GroupName="dlmode" Content="Source code (.zip)"/>
+                                </StackPanel>
+
+                                <TextBlock x:Name="txtAssetsCaption" Grid.Row="2" Text="Assets"
+                                           Style="{StaticResource Label}" Margin="14,14,14,4"/>
+
+                                <ListBox x:Name="lstAssets" Grid.Row="3" Style="{StaticResource GhlListBox}"
+                                         Margin="6,0,6,6">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock x:Name="assetName" Text="{Binding Name}" FontSize="11.5"
+                                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                                <TextBlock x:Name="assetSize" Grid.Column="1" Text="{Binding SizeText}"
+                                                           FontSize="10" Foreground="{StaticResource TextDimBrush}"
+                                                           Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding Compatible}" Value="False">
+                                                    <Setter TargetName="assetName" Property="Foreground" Value="#5B6470"/>
+                                                    <Setter TargetName="assetSize" Property="Foreground" Value="#454C55"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <StackPanel x:Name="pnlActions" Grid.Row="4" Margin="14,6,14,14">
+                                    <Button x:Name="btnDownload" Style="{StaticResource PrimaryButton}"
+                                            Content="Download" IsEnabled="False"/>
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="btnOpenFolder" Style="{StaticResource GhlButton}"
+                                                Content="Open folder" IsEnabled="False"/>
+                                        <Button x:Name="btnRepoPage" Grid.Column="1" Style="{StaticResource GhlButton}"
+                                                Content="&#xE774;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                Padding="11,8" Margin="8,0,0,0" ToolTip="Open on GitHub"
+                                                IsEnabled="False"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <!-- ============ FOOTER ============ -->
+                    <Border Grid.Row="2" Background="#B3161B22" BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="0,1,0,0" CornerRadius="0,0,12,12" Padding="18,10,18,10">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <ProgressBar x:Name="prgDownload" Style="{StaticResource GhlProgress}"
+                                         Minimum="0" Maximum="100" Value="0"/>
+
+                            <Grid Grid.Row="1" Margin="0,9,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock x:Name="txtStatus" Text="Ready" FontSize="11.5"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock x:Name="txtSpeed" Grid.Column="1" Text="" FontSize="11"
+                                           Foreground="{StaticResource TextDimBrush}" Margin="12,0,0,0"
+                                           VerticalAlignment="Center"/>
+
+                                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                    <Button x:Name="btnCancel" Style="{StaticResource DangerButton}"
+                                            Content="Cancel" Visibility="Collapsed" Margin="0,0,8,0"/>
+                                    <Button x:Name="btnOpenLast" Style="{StaticResource SmallButton}"
+                                            Content="Open last download" Visibility="Collapsed"/>
+                                </StackPanel>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+                <!-- ===== TOAST ===== -->
+                <Border x:Name="toast" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                        Margin="0,0,0,86" Padding="16,10" CornerRadius="8" Opacity="0"
+                        Background="#F021262D" BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1" MaxWidth="620" IsHitTestVisible="False">
+                    <TextBlock x:Name="txtToast" Text="" FontSize="11.5" TextWrapping="Wrap"/>
+                </Border>
+
+                <!-- ===== RESIZE THUMBS ===== -->
+                <Thumb x:Name="rsN" Height="6" VerticalAlignment="Top" Cursor="SizeNS"/>
+                <Thumb x:Name="rsS" Height="6" VerticalAlignment="Bottom" Cursor="SizeNS"/>
+                <Thumb x:Name="rsW" Width="6" HorizontalAlignment="Left" Cursor="SizeWE"/>
+                <Thumb x:Name="rsE" Width="6" HorizontalAlignment="Right" Cursor="SizeWE"/>
+                <Thumb x:Name="rsNW" Width="12" Height="12" HorizontalAlignment="Left"
+                       VerticalAlignment="Top" Cursor="SizeNWSE"/>
+                <Thumb x:Name="rsNE" Width="12" Height="12" HorizontalAlignment="Right"
+                       VerticalAlignment="Top" Cursor="SizeNESW"/>
+                <Thumb x:Name="rsSW" Width="12" Height="12" HorizontalAlignment="Left"
+                       VerticalAlignment="Bottom" Cursor="SizeNESW"/>
+                <Thumb x:Name="rsSE" Width="12" Height="12" HorizontalAlignment="Right"
+                       VerticalAlignment="Bottom" Cursor="SizeNWSE"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
