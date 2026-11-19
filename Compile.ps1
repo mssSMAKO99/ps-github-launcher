@@ -18,13 +18,20 @@
 
 .PARAMETER NoVersionBump
     Keeps the version string untouched.
+
+.PARAMETER Bom
+    Writes the artifact with a UTF-8 BOM. Off by default: GitHub Pages serves
+    .ps1 as application/octet-stream without a charset, PowerShell 5.1 then
+    decodes it as ANSI and the BOM becomes garbage before the first token,
+    which breaks "irm | iex". Keep this off unless you really need it.
 #>
 
 [CmdletBinding()]
 param(
     [string]$OutFile,
     [switch]$SkipXamlTest,
-    [switch]$NoVersionBump
+    [switch]$NoVersionBump,
+    [switch]$Bom
 )
 
 $ErrorActionPreference = 'Stop'
@@ -322,17 +329,40 @@ foreach ($rule in $forbidden) {
 }
 Write-Ok 'no forbidden constructs'
 
+# ASCII-only artifact: a BOM-less file is decoded as ANSI by PowerShell 5.1
+# when it arrives without a charset (GitHub Pages -> application/octet-stream),
+# so any non-ASCII byte would be mangled on the "irm | iex" path.
+$nonAscii = [regex]::Match($final, '[^\x00-\x7F]')
+if ($nonAscii.Success -and -not $Bom) {
+    $line = ($final.Substring(0, $nonAscii.Index) -split "`n").Count
+    $code = [int][char]$nonAscii.Value
+    $msg = @(
+        "The generated script contains a non-ASCII character at line ${line}: '$($nonAscii.Value)' (U+$('{0:X4}' -f $code)).",
+        'Keep the sources ASCII-only so the artifact survives the ANSI decode of the irm | iex path:',
+        "  - replace typographic dashes/quotes with ASCII equivalents",
+        "  - or pass -Bom and distribute the file in a way that declares UTF-8"
+    ) -join [Environment]::NewLine
+    throw $msg
+}
+Write-Ok 'artifact is ASCII-only (irm | iex safe)'
+
 # ---------------------------------------------------------------------------
 # 7. write
 # ---------------------------------------------------------------------------
-[IO.File]::WriteAllText($OutFile, $final, (New-Object Text.UTF8Encoding($true)))
+# No BOM by default: see .PARAMETER Bom and the ASCII guard above.
+[IO.File]::WriteAllText($OutFile, $final, (New-Object Text.UTF8Encoding($Bom.IsPresent)))
 $sizeKb = [Math]::Round((Get-Item -LiteralPath $OutFile).Length / 1KB, 1)
 $hash = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash
+
+$raw = [IO.File]::ReadAllBytes($OutFile)
+$hasBom = ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF)
+$encodingLabel = if ($hasBom) { 'UTF-8 with BOM' } else { 'UTF-8 without BOM' }
 
 Write-Host ''
 Write-Host " Built $OutFile" -ForegroundColor Green
 Write-Host "   size    : $sizeKb KB" -ForegroundColor Gray
 Write-Host "   version : $version" -ForegroundColor Gray
+Write-Host "   encoding: $encodingLabel" -ForegroundColor Gray
 Write-Host "   sha256  : $hash" -ForegroundColor Gray
 Write-Host "   lines   : $(($final -split "`n").Count)" -ForegroundColor Gray
 

@@ -119,6 +119,20 @@ function Start-GhlMockApi {
                 forks_count = 0; updated_at = '2026-03-01T10:00:00Z'
                 html_url = "$BaseUrl/mockuser/script-tool"; default_branch = 'main'
                 archived = $false; fork = $false; size = 10
+            },
+            [pscustomobject]@{
+                name = 'second-tool'; full_name = 'mockuser/second-tool'; owner = [pscustomobject]@{ login = 'mockuser' }
+                description = 'Another repo with a Windows asset'; language = 'C#'; stargazers_count = 9
+                forks_count = 1; updated_at = '2026-02-01T10:00:00Z'
+                html_url = "$BaseUrl/mockuser/second-tool"; default_branch = 'main'
+                archived = $false; fork = $false; size = 30
+            },
+            [pscustomobject]@{
+                name = 'third-tool'; full_name = 'mockuser/third-tool'; owner = [pscustomobject]@{ login = 'mockuser' }
+                description = 'Third repo, release with a zip'; language = 'Go'; stargazers_count = 4
+                forks_count = 0; updated_at = '2026-01-01T10:00:00Z'
+                html_url = "$BaseUrl/mockuser/third-tool"; default_branch = 'main'
+                archived = $false; fork = $false; size = 40
             }
         )
 
@@ -129,6 +143,26 @@ function Start-GhlMockApi {
             tarball_url = "$BaseUrl/mockuser/script-tool/tarball"; zipball_url = "$BaseUrl/mockuser/script-tool/zipball"
             assets = @(
                 [pscustomobject]@{ name = 'ScriptTool-1.0.0-windows.zip'; size = $ScriptB64.Length; browser_download_url = "$BaseUrl/dl/script.zip"; content_type = 'application/zip' }
+            )
+        }
+
+        $secondRelease = [pscustomobject]@{
+            tag_name = 'v2.0.0'; name = 'Second Tool'; body = ''; prerelease = $false; draft = $false
+            published_at = '2026-04-03T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/second-tool/releases/tag/v2.0.0"
+            tarball_url = "$BaseUrl/mockuser/second-tool/tarball"; zipball_url = "$BaseUrl/mockuser/second-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'SecondTool-2.0.0-windows.zip'; size = $ExeB64.Length; browser_download_url = "$BaseUrl/dl/win.zip"; content_type = 'application/zip' }
+            )
+        }
+
+        $thirdRelease = [pscustomobject]@{
+            tag_name = 'v3.0.0'; name = 'Third Tool'; body = ''; prerelease = $false; draft = $false
+            published_at = '2026-04-04T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/third-tool/releases/tag/v3.0.0"
+            tarball_url = "$BaseUrl/mockuser/third-tool/tarball"; zipball_url = "$BaseUrl/mockuser/third-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'ThirdTool-3.0.0-linux.tar.gz'; size = 500; browser_download_url = "$BaseUrl/dl/linux.tar.gz"; content_type = 'application/gzip' }
             )
         }
 
@@ -174,6 +208,12 @@ function Start-GhlMockApi {
                     }
                     '^/repos/mockuser/script-tool/releases/latest$' {
                         Send-Bytes $context (& $json $scriptRelease) 'application/json'
+                    }
+                    '^/repos/mockuser/second-tool/releases/latest$' {
+                        Send-Bytes $context (& $json $secondRelease) 'application/json'
+                    }
+                    '^/repos/mockuser/third-tool/releases/latest$' {
+                        Send-Bytes $context (& $json $thirdRelease) 'application/json'
                     }
                     '^/dl/script\.zip$' {
                         Send-Bytes $context ([Convert]::FromBase64String($ScriptB64)) 'application/zip'

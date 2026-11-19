@@ -1,4 +1,4 @@
-﻿<#
+<#
     08-Main.ps1
     WPF host: window, bindings, state machine, worker dispatch.
     The UI thread is the only thread that touches WPF objects.
@@ -107,8 +107,11 @@ function Get-GhlUiMap {
     param($Window)
 
     $names = @(
-        'RootBorder', 'TitleBar', 'btnMin', 'btnMax', 'btnClose', 'imgLogo', 'txtBuildTag',
-        'txtUser', 'txtToken', 'chkRememberToken', 'btnSearch', 'txtRateLimit',
+        'RootBorder', 'TitleBar', 'btnSettings', 'btnMin', 'btnMax', 'btnClose', 'imgLogo', 'txtBuildTag',
+        'bgLayer',
+        'settingsOverlay', 'settingsScrim', 'settingsPanel', 'btnSettingsClose', 'btnSettingsDone',
+        'txtSettingsSaved', 'chkDebugLog', 'btnOpenLogs', 'btnOpenConfigDir', 'txtAbout',
+        'cbUser', 'txtToken', 'chkRememberToken', 'btnSearch', 'txtRateLimit', 'btnFavorite', 'lstFavorites', 'txtFavoritesEmpty', 'btnRemoveFavorite', 'txtBaseDirHint',
         'txtBaseDir', 'btnBrowseBase', 'chkRunAfter', 'chkPrerelease', 'btnOpenBase',
         'txtBg', 'btnBrowseBg', 'txtDimLabel', 'sldDim', 'btnClearBg', 'txtFooterInfo',
         'txtFilter', 'txtFilterPlaceholder', 'spinner', 'btnRefresh', 'txtCount',
@@ -389,8 +392,17 @@ function Update-GhlActionState {
     $busy = [bool]$state.Busy
     $hasRow = ($null -ne $row)
 
-    $ui.btnDownload.IsEnabled = ($hasRow -and -not $busy -and $state.Mode -eq 'Source') -or
-                                ($hasRow -and -not $busy -and $state.Mode -eq 'Release' -and $null -ne $ui.lstAssets.SelectedItem -and $ui.lstAssets.SelectedItem.Compatible)
+    $selectedCount = 0
+    try { $selectedCount = [int]$ui.dgRepos.SelectedItems.Count } catch { }
+
+    if ($selectedCount -gt 1) {
+        # batch mode resolves each repository's best asset in the worker,
+        # so the panel's selection is irrelevant here
+        $ui.btnDownload.IsEnabled = (-not $busy)
+    } else {
+        $ui.btnDownload.IsEnabled = ($hasRow -and -not $busy -and $state.Mode -eq 'Source') -or
+                                    ($hasRow -and -not $busy -and $state.Mode -eq 'Release' -and $null -ne $ui.lstAssets.SelectedItem -and $ui.lstAssets.SelectedItem.Compatible)
+    }
 
     $canOpen = $false
     if ($hasRow) {
@@ -403,7 +415,9 @@ function Update-GhlActionState {
     $ui.rbModeRelease.IsEnabled = ($hasRow -and -not $busy -and $null -ne $state.CurrentRelease)
     $ui.rbModeSource.IsEnabled = ($hasRow -and -not $busy)
 
-    if ($hasRow) {
+    if ($selectedCount -gt 1) {
+        $ui.btnDownload.Content = "Download $selectedCount selected"
+    } elseif ($hasRow) {
         $label = if ($ui.chkRunAfter.IsChecked) { 'Download & run' } else { 'Download' }
         if ($state.Mode -eq 'Release' -and $null -eq $ui.lstAssets.SelectedItem) { $label = 'Select an asset' }
         $ui.btnDownload.Content = $label
@@ -566,10 +580,10 @@ function Start-GhlSearch {
     if ($state.Busy) { return }
 
     $user = ''
-    if ($ui.txtUser.Text) { $user = $ui.txtUser.Text.Trim().TrimStart('@') }
+    if ($ui.cbUser.Text) { $user = $ui.cbUser.Text.Trim().TrimStart('@') }
     if (-not $user) {
         Show-GhlToast -Message 'Enter a GitHub username first.' -Kind 'warn'
-        $ui.txtUser.Focus() | Out-Null
+        $ui.cbUser.Focus() | Out-Null
         return
     }
 
@@ -610,6 +624,12 @@ function Start-GhlDownload {
     $ui = $state.UI
 
     if ($state.Busy) { return }
+
+    # several rows selected -> sequential batch
+    if ($ui.dgRepos.SelectedItems -and $ui.dgRepos.SelectedItems.Count -gt 1) {
+        Start-GhlBatchDownload -Rows @($ui.dgRepos.SelectedItems)
+        return
+    }
 
     $row = $state.SelectedRow
     if (-not $row) {
@@ -676,6 +696,18 @@ function Start-GhlDownload {
         User     = $row.Owner
         Repo     = $row.Name
         AutoRun  = [bool]$ui.chkRunAfter.IsChecked
+        Checksums = $null
+    }
+
+    # published checksums, if this release has them
+    if ($state.Mode -eq 'Release' -and $state.CurrentRelease) {
+        try {
+            $tmpDir = Join-Path (Get-GhlAppDir) 'tmp'
+            $job.Checksums = Get-GhlPublishedChecksums -Release $state.CurrentRelease `
+                -Token $job.Token -TempDir $tmpDir
+        } catch {
+            Write-GhlLog "Checksum lookup skipped: $($_.Exception.Message)" Debug
+        }
     }
 
     $state.BusyKind = 'Download'
@@ -684,6 +716,123 @@ function Start-GhlDownload {
     $ui.prgDownload.Value = 0
 
     Start-GhlWorker -Kind 'Download' -Arguments @{ Sync = $state.Sync; Job = $job }
+}
+
+# ---------------------------------------------------------------------------
+# Batch download: one repository at a time
+# ---------------------------------------------------------------------------
+
+function New-GhlBatchJob {
+    param($Row)
+
+    $state = $Global:GhlState
+
+    # Url stays empty: the worker resolves the best asset (or the source archive)
+    return @{
+        Url      = ''
+        FileName = ''
+        DestDir  = (Get-GhlRepoDir -BaseDir $state.Config.BaseDir -User $Row.Owner -Repo $Row.Name)
+        Mode     = $state.Mode
+        Tag      = ''
+        Token    = (Get-GhlCurrentToken)
+        User     = $Row.Owner
+        Repo     = $Row.Name
+        AutoRun  = [bool]$state.UI.chkRunAfter.IsChecked
+        IncludePrerelease = [bool]$state.UI.chkPrerelease.IsChecked
+    }
+}
+
+function Start-GhlBatchDownload {
+    param([object[]]$Rows)
+
+    $state = $Global:GhlState
+    $ui = $state.UI
+
+    if (-not $Rows -or $Rows.Count -eq 0) { return }
+
+    $queue = New-Object System.Collections.ArrayList
+    foreach ($r in $Rows) {
+        if ($null -eq $r) { continue }
+        [void]$queue.Add((New-GhlBatchJob -Row $r))
+    }
+    if ($queue.Count -eq 0) { return }
+
+    # each queued repo costs up to two API calls (latest + maybe list)
+    $needed = $queue.Count * 2
+    $remaining = 0
+    try { $remaining = [int]$state.LastRemaining } catch { }
+    if ($remaining -gt 0 -and $remaining -lt $needed) {
+        Write-GhlLog "Batch of $($queue.Count) needs about $needed API calls, $remaining left." Warn
+    }
+
+    $state.Queue = $queue
+    $state.QueueTotal = $queue.Count
+    $state.QueueDone = 0
+    $state.QueueSkipped = 0
+
+    Start-GhlNextQueued
+}
+
+function Start-GhlNextQueued {
+    $state = $Global:GhlState
+    $ui = $state.UI
+
+    if (-not $state.Queue -or $state.Queue.Count -eq 0) {
+        # finished
+        $summary = '{0} of {1} repositories downloaded' -f $state.QueueDone, $state.QueueTotal
+        if ($state.QueueSkipped -gt 0) { $summary += " ($($state.QueueSkipped) skipped)" }
+        Set-GhlStatus -Text $summary
+        if ($state.QueueDone -gt 0) {
+            Show-GhlToast -Message $summary -Kind 'success' -Ms 6000
+        }
+        $state.Queue = $null
+        $state.BusyKind = ''
+        Set-GhlBusy -Busy $false
+        $ui.prgDownload.Value = 0
+        Update-GhlActionState
+        return
+    }
+
+    $job = $state.Queue[0]
+    $index = $state.QueueDone + $state.QueueSkipped + 1
+    Set-GhlStatus -Text ('Downloading {0} of {1}: {2}/{3}' -f $index, $state.QueueTotal, $job.User, $job.Repo)
+
+    $state.Sync.CancelRequested = $false
+    $state.Sync.BytesReceived = 0L
+    $state.Sync.BytesTotal = -1L
+    $state.Sync.ProgressPercent = 0.0
+    $state.Sync.SpeedBps = 0.0
+    $state.Sync.Phase = 'downloading'
+
+    $state.BusyKind = 'Download'
+    Set-GhlBusy -Busy $true
+    $ui.prgDownload.Value = 0
+
+    Start-GhlWorker -Kind 'Download' -Arguments @{ Sync = $state.Sync; Job = $job }
+}
+
+function Complete-GhlQueueStep {
+    <# Called after each queued download finishes (ok or not). #>
+    param([bool]$Ok, [string]$ErrKind = '', [string]$Message = '')
+
+    $state = $Global:GhlState
+
+    if (-not $state.Queue -or $state.Queue.Count -eq 0) { return $false }
+
+    [void]$state.Queue.RemoveAt(0)
+
+    if ($Ok) {
+        $state.QueueDone++
+    } elseif ($ErrKind -in @('noasset', 'norelease')) {
+        $state.QueueSkipped++
+        Show-GhlToast -Message $Message -Kind 'warn' -Ms 3500
+    } else {
+        $state.QueueSkipped++
+        Show-GhlToast -Message $Message -Kind 'error' -Ms 5000
+    }
+
+    Start-GhlNextQueued
+    return $true
 }
 
 function Cancel-GhlDownload {
@@ -710,8 +859,171 @@ function ConvertTo-GhlCandidateObjects {
     return $list
 }
 
+function Show-GhlLaunchConfirm {
+    <#
+        Explicit consent before running a downloaded program.
+        Returns $true only when the user pressed "Run".
+
+        The dialog is built in code rather than XAML: it is a single prompt and
+        adding another document would mean another embedded resource.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$FullPath,
+        [string]$RepoName = ''
+    )
+
+    $state = $Global:GhlState
+    if (-not $state -or -not $state.UI) { return $false }
+
+    try {
+        $info = Get-Item -LiteralPath $FullPath
+    } catch {
+        Show-GhlToast -Message "File not found: $FullPath" -Kind 'error'
+        return $false
+    }
+
+    $sig = Get-GhlFileSignature -Path $FullPath
+    $hash = ''
+    try { $hash = (Get-FileHash -LiteralPath $FullPath -Algorithm SHA256).Hash } catch { }
+
+    $dim = $state.Brushes.TextDim
+    $text = $state.Brushes.Text
+
+    $win = New-Object Windows.Window
+    $win.Title = 'Run downloaded program'
+    $win.Width = 560
+    $win.SizeToContent = [Windows.SizeToContent]::Height
+    $win.WindowStyle = [Windows.WindowStyle]::None
+    $win.AllowsTransparency = $true
+    $win.Background = [Windows.Media.Brushes]::Transparent
+    $win.WindowStartupLocation = [Windows.WindowStartupLocation]::CenterOwner
+    $win.ShowInTaskbar = $false
+    $win.ResizeMode = [Windows.ResizeMode]::NoResize
+
+    $root = New-Object Windows.Controls.Border
+    $root.Background = $state.Brushes.Bg0
+    $root.BorderBrush = $state.Brushes.Border
+    $root.BorderThickness = New-Object Windows.Thickness 1
+    $root.CornerRadius = New-Object Windows.CornerRadius 12
+    $root.Padding = New-Object Windows.Thickness 22
+
+    $stack = New-Object Windows.Controls.StackPanel
+
+    $title = New-Object Windows.Controls.TextBlock
+    $title.Text = 'Run this downloaded program?'
+    $title.FontSize = 16
+    $title.FontWeight = [Windows.FontWeights]::SemiBold
+    $title.Foreground = $text
+    $title.Margin = New-Object Windows.Thickness -ArgumentList @(0, 0, 0, 12)
+    [void]$stack.Children.Add($title)
+
+    $warning = New-Object Windows.Controls.TextBlock
+    $warning.Text = 'This file came from the internet. Only run it if you trust its source.'
+    $warning.Foreground = $state.Brushes.Warn
+    $warning.FontSize = 12
+    $warning.TextWrapping = [Windows.TextWrapping]::Wrap
+    $warning.Margin = New-Object Windows.Thickness -ArgumentList @(0, 0, 0, 14)
+    [void]$stack.Children.Add($warning)
+
+    $rows = @(
+        @{ Label = 'File'; Value = $info.Name },
+        @{ Label = 'Size'; Value = (Format-GhlSize $info.Length) },
+        @{ Label = 'From'; Value = $(if ($RepoName) { $RepoName } else { 'this repository' }) },
+        @{ Label = 'SHA-256'; Value = $hash },
+        @{ Label = 'Signature'; Value = $sig.StatusText }
+    )
+    if ($sig.Signer) { $rows += @{ Label = 'Signer'; Value = $sig.Signer } }
+
+    foreach ($row in $rows) {
+        $line = New-Object Windows.Controls.Grid
+        $line.Margin = New-Object Windows.Thickness -ArgumentList @(0, 0, 0, 6)
+        $c1 = New-Object Windows.Controls.ColumnDefinition
+        $c1.Width = [Windows.GridLength]::new(90)
+        $c2 = New-Object Windows.Controls.ColumnDefinition
+        $line.ColumnDefinitions.Add($c1)
+        $line.ColumnDefinitions.Add($c2)
+
+        $label = New-Object Windows.Controls.TextBlock
+        $label.Text = $row.Label
+        $label.Foreground = $dim
+        $label.FontSize = 11.5
+        $value = New-Object Windows.Controls.TextBlock
+        $value.Text = [string]$row.Value
+        $value.Foreground = $text
+        $value.FontSize = 11.5
+        $value.TextWrapping = [Windows.TextWrapping]::Wrap
+        $value.SetValue([Windows.Controls.Grid]::ColumnProperty, 1)
+        if ($row.Label -eq 'Signature' -and -not $sig.IsTrusted) {
+            $value.Foreground = $state.Brushes.Warn
+        }
+        [void]$line.Children.Add($label)
+        [void]$line.Children.Add($value)
+        [void]$stack.Children.Add($line)
+    }
+
+    $buttons = New-Object Windows.Controls.StackPanel
+    $buttons.Orientation = [Windows.Controls.Orientation]::Horizontal
+    $buttons.HorizontalAlignment = [Windows.HorizontalAlignment]::Right
+    $buttons.Margin = New-Object Windows.Thickness -ArgumentList @(0, 18, 0, 0)
+
+    $btnCancel = New-Object Windows.Controls.Button
+    $btnCancel.Content = 'Cancel'
+    $btnCancel.MinWidth = 100
+    $btnCancel.Padding = New-Object Windows.Thickness -ArgumentList @(14, 8, 14, 8)
+    $btnCancel.Margin = New-Object Windows.Thickness -ArgumentList @(0, 0, 10, 0)
+    $btnCancel.Background = $state.Brushes.Bg2
+    $btnCancel.Foreground = $text
+    $btnCancel.BorderBrush = $state.Brushes.Border
+    $btnCancel.Cursor = [Windows.Input.Cursors]::Hand
+
+    $btnRun = New-Object Windows.Controls.Button
+    $btnRun.Content = 'Run'
+    $btnRun.MinWidth = 110
+    $btnRun.Padding = New-Object Windows.Thickness -ArgumentList @(14, 8, 14, 8)
+    $btnRun.Background = $state.Brushes.AccentStrong
+    $btnRun.Foreground = [Windows.Media.Brushes]::White
+    $btnRun.BorderThickness = New-Object Windows.Thickness 0
+    $btnRun.FontWeight = [Windows.FontWeights]::SemiBold
+    $btnRun.Cursor = [Windows.Input.Cursors]::Hand
+
+    [void]$buttons.Children.Add($btnCancel)
+    [void]$buttons.Children.Add($btnRun)
+    [void]$stack.Children.Add($buttons)
+
+    $root.Child = $stack
+    $win.Content = $root
+    $win.Owner = $state.UI.Window
+
+    $script:GhlLaunchConfirmResult = $false
+    $btnRun.Add_Click({ param($s, $e) $script:GhlLaunchConfirmResult = $true; $win.Close() })
+    $btnCancel.Add_Click({ param($s, $e) $script:GhlLaunchConfirmResult = $false; $win.Close() })
+    $win.Add_KeyDown({
+            param($s, $e)
+            if ($e.Key -eq [Windows.Input.Key]::Escape) { $script:GhlLaunchConfirmResult = $false; $win.Close() }
+            if ($e.Key -eq [Windows.Input.Key]::Enter) { $script:GhlLaunchConfirmResult = $true; $win.Close() }
+        })
+
+    $state.ConfirmWindow = $win
+    try {
+        [void]$win.ShowDialog()
+    } catch {
+        Write-GhlLog "Launch confirmation failed: $($_.Exception.Message)" Error
+        return $false
+    } finally {
+        $state.ConfirmWindow = $null
+    }
+
+    return [bool]$script:GhlLaunchConfirmResult
+}
+
 function Start-GhlLaunchTarget {
-    param([string]$FullPath)
+    param([string]$FullPath, [string]$RepoName = '')
+
+    if (-not (Show-GhlLaunchConfirm -FullPath $FullPath -RepoName $RepoName)) {
+        Set-GhlStatus -Text 'Launch cancelled.'
+        Write-GhlLog "Launch cancelled by the user for '$FullPath'." Info
+        return
+    }
 
     try {
         $what = Start-GhlItem -Path $FullPath -WorkingDirectory (Split-Path -Parent $FullPath)
@@ -727,9 +1039,8 @@ function Show-GhlPickerDialog {
     param($Candidates, [string]$RepoName)
 
     $state = $Global:GhlState
-    $xaml = Get-GhlXaml -Name 'PickerWindow'
     try {
-        $win = [Windows.Markup.XamlReader]::Parse($xaml)
+        $win = [Windows.Markup.XamlReader]::Parse((Get-GhlWindowXaml -Name 'PickerWindow'))
     } catch {
         Write-GhlLog "Picker window failed to load: $($_.Exception.Message)" Error
         return $null
@@ -836,6 +1147,41 @@ function Get-GhlBackgroundCachePath {
     return (Join-Path (Join-Path (Get-GhlAppDir) 'bg') ($hash + $ext))
 }
 
+function Update-GhlRoundedClip {
+    <#
+        Clips the background layer to the window's rounded corners.
+
+        A Border with CornerRadius does not clip its children - it only paints its
+        own background - so the background image used to fill the square corners.
+        The clip radius follows RootBorder, which is 12 normally and 0 when
+        maximized.
+    #>
+    param([int]$Radius = -1)
+
+    $state = $Global:GhlState
+    if (-not $state -or -not $state.UI) { return }
+    $ui = $state.UI
+
+    if (-not $ui.ContainsKey('bgLayer') -or -not $ui.bgLayer) { return }
+
+    if ($Radius -lt 0) {
+        $corner = $ui.RootBorder.CornerRadius
+        $Radius = [int][Math]::Round($corner.TopLeft)
+    }
+
+    try {
+        $w = $ui.bgLayer.ActualWidth
+        $h = $ui.bgLayer.ActualHeight
+        if ($w -le 0 -or $h -le 0) { return }
+
+        # the border itself is drawn 1px inside the window edge
+        $rect = New-Object Windows.Rect 0, 0, $w, $h
+        $ui.bgLayer.Clip = New-Object Windows.Media.RectangleGeometry($rect, $Radius, $Radius)
+    } catch {
+        Write-GhlLog "Could not update the background clip: $($_.Exception.Message)" Debug
+    }
+}
+
 function Set-GhlBackgroundImage {
     param([string]$Path)
 
@@ -861,6 +1207,7 @@ function Set-GhlBackgroundImage {
         $ui.imgBackground.Source = $bmp
         $ui.imgBackground.Visibility = [Windows.Visibility]::Visible
         $ui.rectDim.Opacity = [Math]::Min(0.95, [Math]::Max(0.0, ($ui.sldDim.Value / 100.0)))
+        Update-GhlRoundedClip
         Write-GhlLog "Background image applied: $Path"
     } catch {
         Write-GhlLog "Background image could not be loaded: $($_.Exception.Message)" Warn
@@ -924,6 +1271,7 @@ function Set-GhlMaximized {
         $win.Height = $wa.Height
         $state.Maximized = $true
         $ui.RootBorder.CornerRadius = New-Object Windows.CornerRadius 0
+        Update-GhlRoundedClip -Radius 0
         $ui.btnMax.Content = [string][char]0xE923
         $ui.btnMax.ToolTip = 'Restore'
     } elseif (-not $On -and $state.Maximized) {
@@ -936,6 +1284,7 @@ function Set-GhlMaximized {
         }
         $state.Maximized = $false
         $ui.RootBorder.CornerRadius = New-Object Windows.CornerRadius 12
+        Update-GhlRoundedClip -Radius 12
         $ui.btnMax.Content = [string][char]0xE922
         $ui.btnMax.ToolTip = 'Maximize'
     }
@@ -986,7 +1335,7 @@ function Save-GhlUiConfig {
         $cfg.DownloadMode = if ($ui.rbModeSource.IsChecked) { 'Source' } else { 'Release' }
         $cfg.RunAfterDownload = [bool]$ui.chkRunAfter.IsChecked
         $cfg.IncludePrerelease = [bool]$ui.chkPrerelease.IsChecked
-        if ($ui.txtUser.Text) { $cfg.LastUser = [string]$ui.txtUser.Text.Trim() }
+        if ($ui.cbUser.Text) { $cfg.LastUser = [string]$ui.cbUser.Text.Trim() }
 
         $token = ''
         if ($ui.txtToken.Password) { $token = $ui.txtToken.Password }
@@ -1030,7 +1379,7 @@ function Initialize-GhlUiFromConfig {
     $ui = $state.UI
     $cfg = $state.Config
 
-    $ui.txtUser.Text = [string]$cfg.LastUser
+    $ui.cbUser.Text = [string]$cfg.LastUser
     $ui.txtBaseDir.Text = [string]$cfg.BaseDir
     $ui.txtBg.Text = [string]$cfg.BackgroundPath
     $ui.chkRunAfter.IsChecked = [bool]$cfg.RunAfterDownload
@@ -1066,6 +1415,11 @@ function Initialize-GhlUiFromConfig {
     }
 
     $ui.txtFooterInfo.Text = "Downloads: $($cfg.BaseDir)"
+    $ui.chkDebugLog.IsChecked = [bool]$cfg.DebugLog
+    $ui.txtAbout.Text = Get-GhlAboutText
+    Update-GhlFavoritesUi
+    Update-GhlBaseDirHint
+
     if ($cfg.BackgroundPath) {
         Apply-GhlBackgroundSource -Source ([string]$cfg.BackgroundPath)
     } else {
@@ -1146,6 +1500,7 @@ function Invoke-GhlEvent {
                     Show-GhlToast -Message "User '$($Event.User)' has no public repositories." -Kind 'warn'
                 }
                 Update-GhlRateLimit -Remaining $Event.Remaining -ResetAt ''
+                $state.LastRemaining = [int]$Event.Remaining
 
                 # persist the last successful user
                 $state.Config.LastUser = [string]$Event.User
@@ -1189,9 +1544,13 @@ function Invoke-GhlEvent {
         }
 
         'Download' {
-            $state.BusyKind = ''
-            Set-GhlBusy -Busy $false
-            $ui.prgDownload.Value = 0
+            # in batch mode the queue owns the busy state and the status line
+            $inBatch = ($state.Queue -and $state.Queue.Count -gt 0)
+            if (-not $inBatch) {
+                $state.BusyKind = ''
+                Set-GhlBusy -Busy $false
+                $ui.prgDownload.Value = 0
+            }
             $ui.txtSpeed.Text = ''
             $state.Sync.Phase = 'idle'
             $state.Sync.SpeedBps = 0.0
@@ -1200,12 +1559,16 @@ function Invoke-GhlEvent {
                 $state.LastDownloadDir = [string]$Event.DestDir
                 Update-GhlRowBadge -User $Event.User -Repo $Event.Repo
                 $sizeText = Format-GhlSize $Event.Bytes
-                Set-GhlStatus -Text ("Downloaded $($Event.Repo) ($sizeText).")
+                if (-not $inBatch) { Set-GhlStatus -Text ("Downloaded $($Event.Repo) ($sizeText).") }
 
                 $candidates = @($Event.Candidates)
-                Write-GhlLog ("download event: autorun={0} candidates={1} dir='{2}'" -f `
-                        $Event.AutoRun, $candidates.Count, $Event.DestDir) Debug
-                if ($Event.AutoRun) {
+                Write-GhlLog ("download event: autorun={0} candidates={1} dir='{2}' batch={3}" -f `
+                        $Event.AutoRun, $candidates.Count, $Event.DestDir, $inBatch) Debug
+
+                if ($inBatch) {
+                    # batch runs never launch: the queue would block on a modal dialog
+                    [void](Complete-GhlQueueStep -Ok $true)
+                } elseif ($Event.AutoRun) {
                     # the picker is modal; dispatch it after the current timer tick
                     # returns so no nested message loop runs inside the pump
                     $launchCandidates = $candidates
@@ -1221,11 +1584,11 @@ function Invoke-GhlEvent {
                             try { Open-GhlFolder -Path $launchDir } catch { }
                             Show-GhlToast -Message 'Nothing runnable was found - the folder was opened instead.' -Kind 'warn'
                         } elseif ($launchCandidates.Count -eq 1) {
-                            Start-GhlLaunchTarget -FullPath ([string]$launchCandidates[0].FullPath)
+                            Start-GhlLaunchTarget -FullPath ([string]$launchCandidates[0].FullPath) -RepoName $launchRepo
                         } else {
                             $choice = Show-GhlPickerDialog -Candidates $launchCandidates -RepoName $launchRepo
                             if ($choice) {
-                                Start-GhlLaunchTarget -FullPath ([string]$choice.Candidate.FullPath)
+                                Start-GhlLaunchTarget -FullPath ([string]$choice.Candidate.FullPath) -RepoName $launchRepo
                                 if ($choice.Remember) {
                                     Set-GhlRememberedExecutable -Dir $launchDir -RelativePath ([string]$choice.Candidate.RelativePath)
                                 }
@@ -1240,14 +1603,25 @@ function Invoke-GhlEvent {
                     Show-GhlToast -Message "Downloaded $($Event.Repo)." -Kind 'success'
                 }
             } else {
+                Update-GhlRowBadge -User $Event.User -Repo $Event.Repo
+
                 if ($Event.ErrKind -eq 'cancelled') {
-                    Set-GhlStatus -Text 'Download cancelled.'
+                    if ($inBatch) {
+                        # cancel stops the whole batch
+                        $state.Queue = $null
+                        Set-GhlStatus -Text 'Batch cancelled.'
+                        Set-GhlBusy -Busy $false
+                        $ui.prgDownload.Value = 0
+                    } else {
+                        Set-GhlStatus -Text 'Download cancelled.'
+                    }
                     Show-GhlToast -Message 'Download cancelled.' -Kind 'warn'
+                } elseif ($inBatch) {
+                    [void](Complete-GhlQueueStep -Ok $false -ErrKind ([string]$Event.ErrKind) -Message ([string]$Event.Message))
                 } else {
                     Set-GhlStatus -Text 'Download failed.'
                     Show-GhlToast -Message ([string]$Event.Message) -Kind 'error' -Ms 8000
                 }
-                Update-GhlRowBadge -User $Event.User -Repo $Event.Repo
             }
 
             Update-GhlActionState
@@ -1284,6 +1658,68 @@ function Update-GhlRateLimit {
 }
 
 # ---------------------------------------------------------------------------
+# Settings overlay + favourites
+# ---------------------------------------------------------------------------
+
+function Update-GhlFavoritesUi {
+    $state = $Global:GhlState
+    $ui = $state.UI
+
+    $favorites = @(Get-GhlFavoriteUsers -Config $state.Config)
+    $state.Config.FavoriteUsers = $favorites
+
+    # the combo box doubles as the "last used" field, so keep whatever is typed
+    $typed = [string]$ui.cbUser.Text
+    $ui.cbUser.ItemsSource = $favorites
+    $ui.cbUser.Text = $typed
+
+    $ui.lstFavorites.ItemsSource = $favorites
+    $ui.txtFavoritesEmpty.Visibility =
+    if ($favorites.Count -eq 0) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+
+    $ui.btnFavorite.Content = if ($typed -and (Test-GhlFavoriteUser -Config $state.Config -User $typed)) {
+        [string][char]0xE734    # filled star
+    } else {
+        [string][char]0xE735    # outline star
+    }
+}
+
+function Update-GhlBaseDirHint {
+    $state = $Global:GhlState
+    $ui = $state.UI
+    $ui.txtBaseDirHint.Text = "Saving to: $($state.Config.BaseDir)"
+}
+
+function Show-GhlSettings {
+    param([bool]$Show = $true)
+
+    $state = $Global:GhlState
+    $ui = $state.UI
+    $ui.settingsOverlay.Visibility =
+    if ($Show) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+
+    if ($Show) {
+        Update-GhlFavoritesUi
+        $ui.txtSettingsSaved.Text = ''
+        $ui.settingsPanel.Focus() | Out-Null
+    }
+}
+
+function Get-GhlAboutText {
+    $state = $Global:GhlState
+    $version = if ($Global:GHL_Build) { [string]$Global:GHL_Build.Version } else { 'dev' }
+    $built = if ($Global:Ghl_Build) { [string]$Global:GHL_Build.Built } else { '(source)' }
+    return @(
+        "GitHub Launcher $version",
+        "Built $built",
+        '',
+        "Settings: $(Join-Path (Get-GhlAppDir) 'config.json')",
+        '',
+        'Downloads land in {base}\{user}\{repo}.'
+    ) -join [Environment]::NewLine
+}
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 
@@ -1308,6 +1744,90 @@ function Connect-GhlEvents {
     $ui.btnMax.Add_Click({ param($s, $e) Set-GhlMaximized -On (-not $Global:GhlState.Maximized) })
     $ui.btnClose.Add_Click({ param($s, $e) $Global:GhlState.UI.Window.Close() })
 
+    # --- settings overlay -------------------------------------------------
+    $ui.btnSettings.Add_Click({ param($s, $e) Show-GhlSettings -Show $true })
+    $ui.btnSettingsClose.Add_Click({ param($s, $e) Show-GhlSettings -Show $false })
+    $ui.btnSettingsDone.Add_Click({
+            param($s, $e)
+            Save-GhlUiConfig
+            $Global:GhlState.UI.txtSettingsSaved.Text = 'Saved.'
+            Show-GhlSettings -Show $false
+        })
+    $ui.settingsScrim.Add_MouseLeftButtonDown({ param($s, $e) Show-GhlSettings -Show $false })
+
+    $ui.chkDebugLog.Add_Checked({
+            param($s, $e)
+            $st = $Global:GhlState
+            $st.Config.DebugLog = $true
+            $Global:GHL_DebugLog = $true
+        })
+    $ui.chkDebugLog.Add_Unchecked({
+            param($s, $e)
+            $st = $Global:GhlState
+            $st.Config.DebugLog = $false
+            $Global:GHL_DebugLog = [bool]$env:GHL_DEBUG
+        })
+
+    $ui.btnOpenLogs.Add_Click({
+            param($s, $e)
+            $dir = Join-Path (Get-GhlAppDir) 'logs'
+            try { Open-GhlFolder -Path $dir } catch { Show-GhlToast -Message "No logs yet: $dir" -Kind 'warn' }
+        })
+
+    $ui.btnOpenConfigDir.Add_Click({
+            param($s, $e)
+            try { Open-GhlFolder -Path (Get-GhlAppDir) }
+            catch { Show-GhlToast -Message 'Could not open the settings folder.' -Kind 'error' }
+        })
+
+    # --- favourites -------------------------------------------------------
+    $ui.btnFavorite.Add_Click({
+            param($s, $e)
+            $st = $Global:GhlState
+            $name = ([string]$st.UI.cbUser.Text).Trim().TrimStart('@')
+            if (-not $name) {
+                Show-GhlToast -Message 'Type a GitHub username first.' -Kind 'warn'
+                return
+            }
+            if (Test-GhlFavoriteUser -Config $st.Config -User $name) {
+                $st.Config.FavoriteUsers = Remove-GhlFavoriteUser -Config $st.Config -User $name
+                Show-GhlToast -Message "Removed $name from favourites." -Kind 'info' -Ms 2000
+            } else {
+                $st.Config.FavoriteUsers = Add-GhlFavoriteUser -Config $st.Config -User $name
+                Show-GhlToast -Message "Pinned $name." -Kind 'success' -Ms 2000
+            }
+            Update-GhlFavoritesUi
+            [void](Save-GhlConfig -Config $st.Config)
+        })
+
+    $ui.btnRemoveFavorite.Add_Click({
+            param($s, $e)
+            $st = $Global:GhlState
+            $picked = [string]$st.UI.lstFavorites.SelectedItem
+            if (-not $picked) {
+                Show-GhlToast -Message 'Select a favourite first.' -Kind 'warn'
+                return
+            }
+            $st.Config.FavoriteUsers = Remove-GhlFavoriteUser -Config $st.Config -User $picked
+            Update-GhlFavoritesUi
+            [void](Save-GhlConfig -Config $st.Config)
+        })
+
+    $ui.cbUser.Add_LostFocus({
+            param($s, $e)
+            if ($Global:GhlState.UI.cbUser.IsEditable) { Update-GhlFavoritesUi }
+        })
+
+    $ui.lstFavorites.Add_MouseDoubleClick({
+            param($s, $e)
+            $picked = [string]$s.SelectedItem
+            if (-not $picked) { return }
+            $st = $Global:GhlState
+            $st.UI.cbUser.Text = $picked
+            Show-GhlSettings -Show $false
+            if (-not $st.Busy) { Start-GhlSearch }
+        })
+
     Connect-GhlResizeThumb -Thumb $ui.rsN -Edge 'N'
     Connect-GhlResizeThumb -Thumb $ui.rsS -Edge 'S'
     Connect-GhlResizeThumb -Thumb $ui.rsW -Edge 'W'
@@ -1320,7 +1840,7 @@ function Connect-GhlEvents {
     # --- search -----------------------------------------------------------
     $ui.btnSearch.Add_Click({ param($s, $e) Start-GhlSearch })
     $ui.btnRefresh.Add_Click({ param($s, $e) Start-GhlSearch })
-    $ui.txtUser.Add_KeyDown({
+    $ui.cbUser.Add_KeyDown({
             param($s, $e)
             if ($e.Key -eq [Windows.Input.Key]::Enter) { Start-GhlSearch }
         })
@@ -1347,7 +1867,13 @@ function Connect-GhlEvents {
             param($s, $e)
             $st = $Global:GhlState
             if ($st.SuppressSelection) { return }
-            Show-GhlRepoDetails -Row $s.SelectedItem
+
+            # with Extended selection the details panel follows the *current* row,
+            # not the whole selection (that is what the batch button is for)
+            $row = $s.CurrentItem
+            if (-not $row) { $row = $s.SelectedItem }
+            Show-GhlRepoDetails -Row $row
+            Update-GhlActionState
         })
 
     $ui.dgRepos.Add_MouseDoubleClick({
@@ -1469,6 +1995,16 @@ function Connect-GhlEvents {
         })
 
     # --- appearance -------------------------------------------------------
+    # keep the rounded clip in sync with the window size
+    $ui.bgLayer.Add_SizeChanged({
+            param($s, $e)
+            if ($s.ActualWidth -gt 0 -and $s.ActualHeight -gt 0) { Update-GhlRoundedClip }
+        })
+    $ui.RootBorder.Add_SizeChanged({
+            param($s, $e)
+            if ($s.ActualWidth -gt 0 -and $s.ActualHeight -gt 0) { Update-GhlRoundedClip }
+        })
+
     $ui.sldDim.Add_ValueChanged({
             param($s, $e)
             $st = $Global:GhlState
@@ -1512,7 +2048,12 @@ function Connect-GhlEvents {
             $st = $Global:GhlState
             switch ($e.Key) {
                 'Escape' {
-                    if ($st.Busy -and $st.BusyKind -eq 'Download') { Cancel-GhlDownload }
+                    if ($st.UI.settingsOverlay.Visibility -eq [Windows.Visibility]::Visible) {
+                        Show-GhlSettings -Show $false
+                        $e.Handled = $true
+                    } elseif ($st.Busy -and $st.BusyKind -eq 'Download') {
+                        Cancel-GhlDownload
+                    }
                 }
                 'F5' {
                     Start-GhlSearch
@@ -1582,40 +2123,38 @@ function Start-GitHubLauncher {
             RepoCache        = @{}
         })
 
-    $app = $null
-    if ([Windows.Application]::Current) {
-        $app = [Windows.Application]::Current
-    } else {
-        $app = New-Object Windows.Application
-    }
-    $app.ShutdownMode = [Windows.ShutdownMode]::OnMainWindowClose
-
-    $styles = [Windows.Markup.XamlReader]::Parse((Get-GhlXaml -Name 'Styles'))
-    $app.Resources.MergedDictionaries.Clear()
-    [void]$app.Resources.MergedDictionaries.Add($styles)
-
+    # No Application object anywhere. Application.Shutdown() permanently kills the
+    # dispatcher of the thread it ran on, and a second Application cannot be created
+    # in the same AppDomain - so a second Start-GitHubLauncher in the same session
+    # used to fail with a misleading "interface failed to load" (the real cause was
+    # that styles never reached Application.Resources, so StaticResource lookups
+    # threw). Each window carries its own styles now and is shown with ShowDialog().
     try {
-        $window = [Windows.Markup.XamlReader]::Parse((Get-GhlXaml -Name 'MainWindow'))
+        $window = [Windows.Markup.XamlReader]::Parse((Get-GhlWindowXaml -Name 'MainWindow'))
     } catch {
-        Show-GhlFatal -Message "The interface failed to load.`n`n$($_.Exception.Message)"
+        Show-GhlFatal -Message ("The interface failed to load.`n`n{0}`n`n{1}" -f `
+                $_.Exception.Message, $_.ScriptStackTrace)
         return
     }
-    $app.MainWindow = $window
 
     $ui = Get-GhlUiMap -Window $window
     $ui.Window = $window
 
     $brushes = @{
-        Success = $app.Resources['SuccessBrush']
-        Warn    = $app.Resources['WarnBrush']
-        Danger  = $app.Resources['DangerBrush']
-        Border  = $app.Resources['BorderBrush']
-        TextDim = $app.Resources['TextDimBrush']
-        Accent  = $app.Resources['AccentBrush']
+        Success       = $window.FindResource('SuccessBrush')
+        Warn          = $window.FindResource('WarnBrush')
+        Danger        = $window.FindResource('DangerBrush')
+        Border        = $window.FindResource('BorderBrush')
+        TextDim       = $window.FindResource('TextDimBrush')
+        Text          = $window.FindResource('TextBrush')
+        Accent        = $window.FindResource('AccentBrush')
+        AccentStrong  = $window.FindResource('AccentStrongBrush')
+        Bg0           = $window.FindResource('Bg0Brush')
+        Bg2           = $window.FindResource('Bg2Brush')
     }
 
     $Global:GhlState = @{
-        App             = $app
+        App             = $null
         UI              = $ui
         Config          = $config
         Sync            = $sync
@@ -1640,7 +2179,13 @@ function Start-GitHubLauncher {
         ToastTimer      = $null
         Brushes         = $brushes
         PickerWindow    = $null
+        ConfirmWindow   = $null
         SuppressSelection = $false
+        Queue           = $null
+        QueueTotal      = 0
+        QueueDone       = 0
+        QueueSkipped    = 0
+        LastRemaining   = -1
     }
 
     # icon
@@ -1715,9 +2260,15 @@ function Start-GitHubLauncher {
     }
 
     Write-GhlLog "Showing window ($([int]$window.Width)x$([int]$window.Height))."
-    [void]$app.Run($window)
+    try {
+        # ShowDialog runs its own message loop on this thread and returns when the
+        # window closes - no Application.Run, so nothing global is torn down.
+        [void]$window.ShowDialog()
+    } catch {
+        Show-GhlFatal -Message ("The interface crashed.`n`n{0}" -f $_.Exception.Message)
+    }
 
-    if ($Global:GhlState.Pump) { $Global:GhlState.Pump.Stop() }
+    if ($Global:GhlState -and $Global:GhlState.Pump) { $Global:GhlState.Pump.Stop() }
     $Global:GhlState = $null
     Write-GhlLog 'Application exited.'
 }

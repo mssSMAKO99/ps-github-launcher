@@ -5,20 +5,17 @@
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Display" SnapsToDevicePixels="True"
-        FontFamily="Segoe UI" Foreground="{StaticResource TextBrush}"
+        FontFamily="Segoe UI" Foreground="{DynamicResource TextBrush}"
         FontSize="12">
 
+    <!-- @@STYLES@@ inserted by Compile.ps1: a self-contained ResourceDictionary.
+         Keeping the styles inside each window means no dependency on
+         Application.Current.Resources, so the UI can be created more than once
+         in the same PowerShell session. -->
     <Window.Resources>
-        <!-- makes the invisible edge-resize thumbs hit-testable -->
-        <Style TargetType="Thumb">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Thumb">
-                        <Border Background="Transparent"/>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <ResourceDictionary>
+            <!-- GHL_STYLES_INJECT -->
+        </ResourceDictionary>
     </Window.Resources>
 
     <Grid>
@@ -26,8 +23,12 @@
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
             <Grid>
                 <!-- ===== background layers ===== -->
-                <Image x:Name="imgBackground" Stretch="UniformToFill" Opacity="1" IsHitTestVisible="False"/>
-                <Rectangle x:Name="rectDim" Fill="#0D1117" Opacity="0" IsHitTestVisible="False"/>
+                <!-- background image and dimming share one clipped layer, so the
+                     rounded corners are respected (a Border does not clip children) -->
+                <Grid x:Name="bgLayer" ClipToBounds="True">
+                    <Image x:Name="imgBackground" Stretch="UniformToFill" Opacity="1" IsHitTestVisible="False"/>
+                    <Rectangle x:Name="rectDim" Fill="#0D1117" Opacity="0" IsHitTestVisible="False"/>
+                </Grid>
 
                 <!-- ===== content ===== -->
                 <Grid>
@@ -59,8 +60,10 @@
                             </StackPanel>
 
                             <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="btnSettings" Style="{StaticResource TitleButton}"
+                                        Content="&#xE713;" FontSize="13" ToolTip="Settings"/>
                                 <Button x:Name="btnMin" Style="{StaticResource TitleButton}"
-                                        Content="&#xE921;" ToolTip="Minimize"/>
+                                        Content="&#xE921;" ToolTip="Minimize" Margin="2,0,0,0"/>
                                 <Button x:Name="btnMax" Style="{StaticResource TitleButton}"
                                         Content="&#xE922;" ToolTip="Maximize" Margin="2,0"/>
                                 <Button x:Name="btnClose" Style="{StaticResource CloseTitleButton}"
@@ -77,15 +80,29 @@
                             <ColumnDefinition Width="336"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- SETTINGS -->
+                        <!-- ACCOUNT + DOWNLOAD OPTIONS -->
                         <Border Grid.Column="0" Style="{StaticResource PanelBorder}" Margin="0,0,12,0">
                             <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="14,12,10,12">
                                 <StackPanel>
                                     <TextBlock Text="GITHUB ACCOUNT" Style="{StaticResource SectionHeader}"/>
-                                    <TextBox x:Name="txtUser" Style="{StaticResource GhlTextBox}"
-                                             ToolTip="GitHub username or organization"/>
-                                    <PasswordBox x:Name="txtToken" Style="{StaticResource GhlPasswordBox}"
-                                                 Margin="0,8,0,0" ToolTip="Personal access token (optional)"/>
+
+                                    <!-- editable combo: favourites are one click away -->
+                                    <ComboBox x:Name="cbUser" Style="{StaticResource GhlComboBox}"
+                                              IsEditable="True" IsTextSearchEnabled="True"
+                                              ToolTip="GitHub username or organization"/>
+
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <PasswordBox x:Name="txtToken" Style="{StaticResource GhlPasswordBox}"
+                                                     ToolTip="Personal access token (optional)"/>
+                                        <Button x:Name="btnFavorite" Grid.Column="1" Style="{StaticResource SmallButton}"
+                                                Content="&#xE735;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                Padding="9,8" Margin="6,0,0,0" MinWidth="32"
+                                                ToolTip="Add the current user to favourites"/>
+                                    </Grid>
                                     <CheckBox x:Name="chkRememberToken" Style="{StaticResource GhlCheckBox}"
                                               Content="Remember token (DPAPI encrypted)"/>
                                     <Button x:Name="btnSearch" Style="{StaticResource PrimaryButton}"
@@ -96,48 +113,23 @@
                                     <Separator Style="{StaticResource HLine}"/>
 
                                     <TextBlock Text="DOWNLOAD" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock Text="Base folder" Style="{StaticResource Label}" Margin="0,0,0,4"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtBaseDir" Style="{StaticResource GhlTextBox}"/>
-                                        <Button x:Name="btnBrowseBase" Grid.Column="1" Content="..."
-                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
-                                                MinWidth="30" ToolTip="Choose folder"/>
-                                    </Grid>
                                     <CheckBox x:Name="chkRunAfter" Style="{StaticResource GhlCheckBox}"
-                                              Content="Run immediately after download"/>
+                                              Content="Run immediately after download" Margin="0,0,0,0"/>
                                     <CheckBox x:Name="chkPrerelease" Style="{StaticResource GhlCheckBox}"
                                               Content="Include pre-release versions"/>
-                                    <Button x:Name="btnOpenBase" Style="{StaticResource GhlButton}"
-                                            Content="Open base folder" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="txtBaseDirHint" Style="{StaticResource Hint}"
+                                               Margin="0,12,0,0" TextWrapping="Wrap"/>
 
                                     <Separator Style="{StaticResource HLine}"/>
 
-                                    <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
-                                               Margin="0,0,0,4"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtBg" Style="{StaticResource GhlTextBox}"/>
-                                        <Button x:Name="btnBrowseBg" Grid.Column="1" Content="..."
-                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
-                                                MinWidth="30" ToolTip="Choose image"/>
-                                    </Grid>
-                                    <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%" Style="{StaticResource Label}"
-                                               Margin="0,10,0,0"/>
-                                    <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
-                                            Minimum="0" Maximum="90" Value="55"
-                                            SmallChange="1" LargeChange="10"/>
-                                    <Button x:Name="btnClearBg" Style="{StaticResource GhlButton}"
-                                            Content="Reset background" Margin="0,10,0,0"/>
-
-                                    <TextBlock x:Name="txtFooterInfo" Style="{StaticResource Hint}" Margin="0,14,0,0"/>
+                                    <TextBlock Text="FAVOURITES" Style="{StaticResource SectionHeader}"/>
+                                    <ListBox x:Name="lstFavorites" Style="{StaticResource GhlListBox}"
+                                             MaxHeight="150" MinHeight="34"/>
+                                    <TextBlock x:Name="txtFavoritesEmpty" Style="{StaticResource Hint}"
+                                               Text="Star a user with the button above."
+                                               Margin="2,4,0,0"/>
+                                    <Button x:Name="btnRemoveFavorite" Style="{StaticResource SmallButton}"
+                                            Content="Remove selected" Margin="0,8,0,0"/>
                                 </StackPanel>
                             </ScrollViewer>
                         </Border>
@@ -196,13 +188,13 @@
                                             Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
                                             Padding="9,7" ToolTip="Reload repositories (F5)"/>
                                     <TextBlock x:Name="txtCount" Grid.Column="3" Style="{StaticResource Hint}"
-                                               VerticalAlignment="Center" Margin="10,0,0,0" Text="—"/>
+                                               VerticalAlignment="Center" Margin="10,0,0,0" Text="-"/>
                                 </Grid>
 
                                 <DataGrid x:Name="dgRepos" Grid.Row="1" Margin="4,0,4,4"
                                           AutoGenerateColumns="False"
                                           CanUserAddRows="False" CanUserDeleteRows="False" CanUserResizeRows="False"
-                                          IsReadOnly="True" SelectionMode="Single" SelectionUnit="FullRow"
+                                          IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow"
                                           HeadersVisibility="Column" GridLinesVisibility="None"
                                           Background="Transparent" BorderThickness="0" RowHeight="40"
                                           RowHeaderWidth="0" ColumnHeaderHeight="34"
@@ -418,6 +410,113 @@
                     </Border>
                 </Grid>
 
+                <!-- ===== SETTINGS OVERLAY (gear) ===== -->
+                <Grid x:Name="settingsOverlay" Visibility="Collapsed" Panel.ZIndex="40">
+                    <Border x:Name="settingsScrim" Background="#9E000000"/>
+
+                    <Border x:Name="settingsPanel" Width="520" HorizontalAlignment="Right"
+                            VerticalAlignment="Stretch" Margin="0,8,10,10"
+                            Background="{StaticResource Bg0Brush}"
+                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="12" Padding="0">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <Grid Margin="18,14,12,10">
+                                <TextBlock Text="Settings" FontSize="15" FontWeight="SemiBold"/>
+                                <Button x:Name="btnSettingsClose" Style="{StaticResource TitleButton}"
+                                        Content="&#xE8BB;" HorizontalAlignment="Right"
+                                        FontSize="11" ToolTip="Close (Esc)"/>
+                            </Grid>
+
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                                          Padding="18,0,12,0">
+                                <StackPanel>
+                                    <TextBlock Text="DOWNLOADS" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock Text="Base folder" Style="{StaticResource Label}"
+                                               Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txtBaseDir" Style="{StaticResource GhlTextBox}"/>
+                                        <Button x:Name="btnBrowseBase" Grid.Column="1" Content="..."
+                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                MinWidth="30" ToolTip="Choose folder"/>
+                                    </Grid>
+                                    <Button x:Name="btnOpenBase" Style="{StaticResource GhlButton}"
+                                            Content="Open base folder" Margin="0,10,0,0"/>
+                                    <TextBlock x:Name="txtFooterInfo" Style="{StaticResource Hint}"
+                                               Margin="0,10,0,0"/>
+
+                                    <Separator Style="{StaticResource HLine}"/>
+
+                                    <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
+                                               Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="txtBg" Style="{StaticResource GhlTextBox}"/>
+                                        <Button x:Name="btnBrowseBg" Grid.Column="1" Content="..."
+                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                MinWidth="30" ToolTip="Choose image"/>
+                                    </Grid>
+                                    <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%"
+                                               Style="{StaticResource Label}" Margin="0,10,0,0"/>
+                                    <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
+                                            Minimum="0" Maximum="90" Value="55"
+                                            SmallChange="1" LargeChange="10"/>
+                                    <Button x:Name="btnClearBg" Style="{StaticResource GhlButton}"
+                                            Content="Reset background" Margin="0,10,0,0"/>
+
+                                    <Separator Style="{StaticResource HLine}"/>
+
+                                    <TextBlock Text="ADVANCED" Style="{StaticResource SectionHeader}"/>
+                                    <CheckBox x:Name="chkDebugLog" Style="{StaticResource GhlCheckBox}"
+                                              Content="Verbose debug log" Margin="0,0,0,0"/>
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Button x:Name="btnOpenLogs" Style="{StaticResource GhlButton}"
+                                                Content="Open logs" Margin="0,0,5,0"/>
+                                        <Button x:Name="btnOpenConfigDir" Grid.Column="1"
+                                                Style="{StaticResource GhlButton}"
+                                                Content="Settings folder" Margin="5,0,0,0"/>
+                                    </Grid>
+
+                                    <Separator Style="{StaticResource HLine}"/>
+
+                                    <TextBlock Text="ABOUT" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock x:Name="txtAbout" Style="{StaticResource Hint}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <Border Grid.Row="2" BorderThickness="0,1,0,0"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    Padding="18,12,18,14">
+                                <Grid>
+                                    <TextBlock x:Name="txtSettingsSaved" Text="" FontSize="11"
+                                               Foreground="{StaticResource TextDimBrush}"
+                                               VerticalAlignment="Center"/>
+                                    <Button x:Name="btnSettingsDone" Style="{StaticResource PrimaryButton}"
+                                            Content="Done" HorizontalAlignment="Right" MinWidth="90"/>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </Grid>
+
                 <!-- ===== TOAST ===== -->
                 <Border x:Name="toast" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                         Margin="0,0,0,86" Padding="16,10" CornerRadius="8" Opacity="0"
@@ -427,17 +526,17 @@
                 </Border>
 
                 <!-- ===== RESIZE THUMBS ===== -->
-                <Thumb x:Name="rsN" Height="6" VerticalAlignment="Top" Cursor="SizeNS"/>
-                <Thumb x:Name="rsS" Height="6" VerticalAlignment="Bottom" Cursor="SizeNS"/>
-                <Thumb x:Name="rsW" Width="6" HorizontalAlignment="Left" Cursor="SizeWE"/>
-                <Thumb x:Name="rsE" Width="6" HorizontalAlignment="Right" Cursor="SizeWE"/>
-                <Thumb x:Name="rsNW" Width="12" Height="12" HorizontalAlignment="Left"
+                <Thumb x:Name="rsN" Style="{StaticResource ResizeThumb}" Height="6" VerticalAlignment="Top" Cursor="SizeNS"/>
+                <Thumb x:Name="rsS" Style="{StaticResource ResizeThumb}" Height="6" VerticalAlignment="Bottom" Cursor="SizeNS"/>
+                <Thumb x:Name="rsW" Style="{StaticResource ResizeThumb}" Width="6" HorizontalAlignment="Left" Cursor="SizeWE"/>
+                <Thumb x:Name="rsE" Style="{StaticResource ResizeThumb}" Width="6" HorizontalAlignment="Right" Cursor="SizeWE"/>
+                <Thumb x:Name="rsNW" Style="{StaticResource ResizeThumb}" Width="12" Height="12" HorizontalAlignment="Left"
                        VerticalAlignment="Top" Cursor="SizeNWSE"/>
-                <Thumb x:Name="rsNE" Width="12" Height="12" HorizontalAlignment="Right"
+                <Thumb x:Name="rsNE" Style="{StaticResource ResizeThumb}" Width="12" Height="12" HorizontalAlignment="Right"
                        VerticalAlignment="Top" Cursor="SizeNESW"/>
-                <Thumb x:Name="rsSW" Width="12" Height="12" HorizontalAlignment="Left"
+                <Thumb x:Name="rsSW" Style="{StaticResource ResizeThumb}" Width="12" Height="12" HorizontalAlignment="Left"
                        VerticalAlignment="Bottom" Cursor="SizeNESW"/>
-                <Thumb x:Name="rsSE" Width="12" Height="12" HorizontalAlignment="Right"
+                <Thumb x:Name="rsSE" Style="{StaticResource ResizeThumb}" Width="12" Height="12" HorizontalAlignment="Right"
                        VerticalAlignment="Bottom" Cursor="SizeNWSE"/>
             </Grid>
         </Border>

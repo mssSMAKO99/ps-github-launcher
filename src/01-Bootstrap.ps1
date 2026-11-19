@@ -4,8 +4,16 @@
 #>
 
 function Get-GhlAppDir {
-    <# Returns %LocalAppData%\GitHubLauncher and creates it. #>
-    $dir = Join-Path $env:LOCALAPPDATA 'GitHubLauncher'
+    <#
+        Returns the app data folder (%LocalAppData%\GitHubLauncher) and creates it.
+        GHL_CONFIG_DIR overrides the location, so tests and screenshots can run
+        against their own settings instead of the user's real ones.
+    #>
+    if ($env:GHL_CONFIG_DIR) {
+        $dir = $env:GHL_CONFIG_DIR
+    } else {
+        $dir = Join-Path $env:LOCALAPPDATA 'GitHubLauncher'
+    }
     foreach ($sub in @('', 'logs', 'bg', 'tmp')) {
         $p = if ($sub) { Join-Path $dir $sub } else { $dir }
         if (-not (Test-Path -LiteralPath $p)) {
@@ -42,6 +50,44 @@ function Get-GhlXaml {
         throw "XAML resource '$Name' not found at '$path'. Run Compile.ps1 to build a standalone script."
     }
     return (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
+}
+
+function Get-GhlStylesFragment {
+    <#
+        Returns the body of Styles.xaml (everything inside the ResourceDictionary
+        root element) so it can be inlined into a window's own resources.
+    #>
+    $text = Get-GhlXaml -Name 'Styles'
+    $start = $text.IndexOf('>')
+    $end = $text.LastIndexOf('</ResourceDictionary>')
+    if ($start -lt 0 -or $end -lt 0 -or $end -le $start) {
+        throw 'Styles.xaml does not look like a ResourceDictionary.'
+    }
+    return $text.Substring($start + 1, $end - $start - 1)
+}
+
+function Get-GhlWindowXaml {
+    <#
+        Returns window XAML with the shared styles inlined into Window.Resources.
+
+        Why inline instead of Application.Current.Resources: creating a second
+        WPF window in the same PowerShell session fails once Application.Run()
+        has shut the dispatcher down ("Cannot create more than one instance of
+        System.Windows.Application in the same AppDomain"). A window whose
+        StaticResource lookups resolve locally does not need Application at all,
+        so the UI can be created repeatedly.
+    #>
+    param([Parameter(Mandatory)][string]$Name)
+
+    $xaml = Get-GhlXaml -Name $Name
+
+    $marker = '<!-- GHL_STYLES_INJECT -->'
+    if ($xaml.IndexOf($marker) -lt 0) {
+        throw "The window XAML '$Name' is missing the $marker marker."
+    }
+
+    $styles = Get-GhlStylesFragment
+    return $xaml.Replace($marker, $styles.Trim())
 }
 
 function Get-GhlAssetBytes {
@@ -140,10 +186,30 @@ function Initialize-GhlEnvironment {
 
         [void][Reflection.Assembly]::LoadWithPartialName('PresentationFramework')
         Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+
+        $hint = @(
+            'GitHub Launcher needs a single-threaded apartment (STA) host, because WPF cannot run on a multi-threaded one.',
+            '',
+            'You are running it in an MTA shell (PowerShell 7 / pwsh). Use the built-in Windows PowerShell instead:',
+            '',
+            '    powershell.exe -NoProfile -STA -Command "irm <the same url> | iex"',
+            '',
+            'Or save the file and start it directly:',
+            '',
+            '    irm <the same url> -OutFile "$env:TEMP\GitHubLauncher.ps1"',
+            '    powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "$env:TEMP\GitHubLauncher.ps1"',
+            '',
+            'Windows PowerShell 5.1 (powershell.exe) is STA by default, so the one-liner works there as-is.'
+        ) -join [Environment]::NewLine
+
+        if ($env:GHL_HEADLESS) {
+            # used by the test suite: never block on a modal dialog
+            Write-Host 'GHL: a single-threaded apartment (STA) host is required; refusing to start in MTA.'
+            return $false
+        }
+
         [void][Windows.MessageBox]::Show(
-            "GitHub Launcher needs a single-threaded apartment (STA) host.`n`n" +
-            "Run it from powershell.exe (not pwsh) and do not pipe it into a MTA host:`n`n" +
-            "    powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1",
+            $hint,
             'GitHub Launcher',
             [Windows.MessageBoxButton]::OK,
             [Windows.MessageBoxImage]::Warning)

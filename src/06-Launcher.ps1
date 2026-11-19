@@ -197,8 +197,10 @@ function Start-GhlItem {
             return (Split-Path -Leaf $Path)
         }
         '.ps1' {
+            # RemoteSigned, never Bypass: a downloaded script keeps its
+            # "from the internet" mark and unsigned scripts are refused
             Start-Process -FilePath 'powershell.exe' `
-                -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $Path) `
+                -ArgumentList ('-NoProfile -ExecutionPolicy RemoteSigned -File "{0}"' -f $Path) `
                 -WorkingDirectory $WorkingDirectory -ErrorAction Stop | Out-Null
             return (Split-Path -Leaf $Path)
         }
@@ -231,4 +233,159 @@ function Get-GhlRepoFileList {
     } catch {
         return @()
     }
+}
+
+# ---------------------------------------------------------------------------
+# Provenance: mark of the web, signatures, published checksums
+# ---------------------------------------------------------------------------
+
+function Set-GhlMarkOfTheWeb {
+    <#
+        Tags a downloaded file with a Zone.Identifier stream (ZoneId=3, "Internet"),
+        so SmartScreen and Defender treat it as content from the web instead of a
+        locally created file. Best effort: NTFS alternate data streams do not exist
+        on every file system.
+    #>
+    param([Parameter(Mandatory)][string]$Path, [string]$SourceUrl = '')
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+
+    $content = @(
+        '[ZoneTransfer]'
+        'ZoneId=3'
+    )
+    if ($SourceUrl) { $content += "ReferrerUrl=$SourceUrl" }
+    $content += 'HostUrl=about:internet'
+
+    try {
+        # NTFS alternate data stream. A path like "file:Zone.Identifier" cannot be
+        # opened through System.IO (the colon is parsed as a drive), so the
+        # PowerShell -Stream parameter is the reliable way to create it.
+        $payload = $content -join "`r`n"
+        Set-Content -LiteralPath $Path -Stream 'Zone.Identifier' -Value $payload -Encoding ASCII -ErrorAction Stop
+        Write-GhlLog "Mark of the web written to '$Path'." Debug
+        return $true
+    } catch {
+        Write-GhlLog "Could not write the mark of the web: $($_.Exception.Message)" Debug
+        return $false
+    }
+}
+
+function Get-GhlFileSignature {
+    <#
+        Authenticode summary for a downloaded file.
+        Returns @{ Status; StatusText; Signer; IsSigned; IsTrusted }.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $result = @{
+        Status     = 'UnknownError'
+        StatusText = 'not verified'
+        Signer     = ''
+        IsSigned   = $false
+        IsTrusted  = $false
+    }
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $result }
+
+    try {
+        $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+        $result.Status = [string]$sig.Status
+        $result.Signer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+        $result.IsSigned = ($null -ne $sig.SignerCertificate)
+
+        switch ([string]$sig.Status) {
+            'Valid' {
+                $result.StatusText = 'valid signature'
+                $result.IsTrusted = $true
+            }
+            'NotSigned' {
+                $result.StatusText = 'not digitally signed'
+            }
+            'UnknownError' {
+                $result.StatusText = 'no signature information'
+            }
+            'HashMismatch' {
+                $result.StatusText = 'SIGNATURE HASH MISMATCH - the file was modified'
+            }
+            default {
+                $result.StatusText = ('signature {0}' -f $sig.Status)
+            }
+        }
+    } catch {
+        $result.StatusText = 'could not read the signature'
+    }
+
+    return $result
+}
+
+function Get-GhlPublishedChecksums {
+    <#
+        Downloads the release's checksum file, if there is one, and returns
+        @{ Name; Entries = @{ file = hash } } or $null.
+    #>
+    param($Release, [string]$Token, [string]$TempDir)
+
+    if (-not $Release -or -not $Release.Assets) { return $null }
+
+    $candidate = $null
+    foreach ($a in @($Release.Assets)) {
+        if ($a.Name -match '(?i)^(sha256sums?(\.txt)?|checksums?(\.txt)?|sha256\.txt)$') { $candidate = $a; break }
+    }
+    if (-not $candidate) {
+        foreach ($a in @($Release.Assets)) {
+            if ($a.Name -match '(?i)sha256') { $candidate = $a; break }
+        }
+    }
+    if (-not $candidate) { return $null }
+
+    if (-not $TempDir -or -not (Test-Path -LiteralPath $TempDir)) { return $null }
+    $path = Join-Path $TempDir ('checksums-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+
+    try {
+        [void](Invoke-GhlDownload -Url $candidate.Url -OutFile $path -Token $Token)
+    } catch {
+        Write-GhlLog "Could not download the checksum file: $($_.Exception.Message)" Debug
+        return $null
+    }
+
+    $entries = @{}
+    try {
+        foreach ($line in (Get-Content -LiteralPath $path -ErrorAction Stop)) {
+            if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(.+?)\s*$') {
+                $entries[$Matches[2].Trim()] = $Matches[1].ToLowerInvariant()
+            }
+        }
+    } catch {
+        Write-GhlLog "Could not parse the checksum file: $($_.Exception.Message)" Debug
+    } finally {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($entries.Count -eq 0) { return $null }
+    return @{ Name = $candidate.Name; Entries = $entries }
+}
+
+function Test-GhlHashMatches {
+    param([string]$Path, [string]$Expected)
+
+    if (-not $Path -or -not $Expected -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        return ($actual -ieq $Expected)
+    } catch {
+        return $false
+    }
+}
+
+function Get-GhlExpectedHash {
+    <# Looks a file name up in a checksum table (case-insensitive). #>
+    param($Checksums, [string]$FileName)
+
+    if (-not $Checksums -or -not $Checksums.Entries -or -not $FileName) { return '' }
+    foreach ($key in $Checksums.Entries.Keys) {
+        if ($key -ieq $FileName) { return $Checksums.Entries[$key] }
+        if ([IO.Path]::GetFileName($key) -ieq $FileName) { return $Checksums.Entries[$key] }
+    }
+    return ''
 }

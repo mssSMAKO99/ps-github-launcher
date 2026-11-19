@@ -1,4 +1,4 @@
-﻿<#
+<#
     02-Config.ps1
     Persistent settings + DPAPI-protected PAT.
 #>
@@ -13,31 +13,114 @@ function Get-GhlDefaultConfig {
         PatCipher       = ''
         PatPlain        = ''              # only used when DPAPI is unavailable
         LastUser        = ''
+        FavoriteUsers   = @()             # pinned GitHub logins
         DownloadMode    = 'Release'       # Release | Source
-        RunAfterDownload = $true
+        RunAfterDownload = $false         # opt-in: never launch by default
         IncludePrerelease = $false
-        Window          = [ordered]@{ Width = 1280; Height = 820; Left = -1; Top = -1; Maximized = $false }
         DebugLog        = $false
+        Window          = [ordered]@{ Width = 1280; Height = 820; Left = -1; Top = -1; Maximized = $false }
     }
 }
 
+function Get-GhlFavoriteUsers {
+    <#
+        Returns a normalised, de-duplicated list of pinned logins.
+
+        A single-element array becomes a plain string after a JSON round-trip,
+        so the value is always wrapped in @() and stringified element by element.
+    #>
+    param([Parameter(Mandatory)]$Config)
+
+    $list = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($item in @($Config.FavoriteUsers)) {
+        if ($null -eq $item) { continue }
+        $name = ([string]$item).Trim().TrimStart('@')
+        if (-not $name) { continue }
+        if ($name.Length -gt 39) { $name = $name.Substring(0, 39) }
+        if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9\-]*$') { continue }
+        if ($seen.Add($name)) { [void]$list.Add($name) }
+        if ($list.Count -ge 15) { break }
+    }
+
+    return $list.ToArray()
+}
+
+function Add-GhlFavoriteUser {
+    <# Adds (or moves to front) a login. Returns the new array. #>
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$User)
+
+    $name = $User.Trim().TrimStart('@')
+    if (-not $name) { return Get-GhlFavoriteUsers -Config $Config }
+
+    $list = New-Object System.Collections.Generic.List[string]
+    [void]$list.Add($name)
+    foreach ($existing in @(Get-GhlFavoriteUsers -Config $Config)) {
+        if (-not $existing.Equals($name, [StringComparison]::OrdinalIgnoreCase)) { [void]$list.Add($existing) }
+    }
+
+    $result = @($list.ToArray())
+    if ($result.Count -gt 15) { $result = @($result[0..14]) }
+    return $result
+}
+
+function Remove-GhlFavoriteUser {
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$User)
+
+    $kept = @(Get-GhlFavoriteUsers -Config $Config | Where-Object {
+            -not $_.Equals($User.Trim(), [StringComparison]::OrdinalIgnoreCase)
+        })
+    return $kept
+}
+
+function Test-GhlFavoriteUser {
+    param([Parameter(Mandatory)]$Config, [string]$User)
+
+    if (-not $User) { return $false }
+    $name = $User.Trim().TrimStart('@')
+    foreach ($f in @(Get-GhlFavoriteUsers -Config $Config)) {
+        if ($f.Equals($name, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Convert-GhlToHashtable {
+    <#
+        Normalises parsed JSON into ordered dictionaries / arrays.
+
+        Order matters: in PowerShell every object also satisfies
+        "-is [pscustomobject]" (it is the PSObject wrapper), so dictionaries and
+        enumerables have to be handled first - otherwise an array of favourites
+        would be turned into a dictionary of its properties.
+    #>
     param($InputObject)
 
     if ($null -eq $InputObject) { return $null }
+
+    if ($InputObject -is [string] -or $InputObject -is [ValueType]) {
+        return $InputObject
+    }
+
     if ($InputObject -is [System.Collections.IDictionary]) {
         $out = [ordered]@{}
         foreach ($k in $InputObject.Keys) { $out[$k] = Convert-GhlToHashtable $InputObject[$k] }
         return $out
     }
-    if ($InputObject -is [pscustomobject]) {
+
+    if ($InputObject -is [System.Collections.IEnumerable]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $InputObject) { $items.Add((Convert-GhlToHashtable $item)) }
+        return ,$items.ToArray()
+    }
+
+    $props = $InputObject.PSObject.Properties
+    if ($props -and $props.Count -gt 0) {
         $out = [ordered]@{}
-        foreach ($p in $InputObject.PSObject.Properties) { $out[$p.Name] = Convert-GhlToHashtable $p.Value }
+        foreach ($p in $props) { $out[$p.Name] = Convert-GhlToHashtable $p.Value }
         return $out
     }
-    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
-        return @($InputObject | ForEach-Object { Convert-GhlToHashtable $_ })
-    }
+
     return $InputObject
 }
 
