@@ -14,8 +14,8 @@
         </ResourceDictionary>
     </Window.Resources>
 
-    <Border CornerRadius="12" Background="{StaticResource Bg0Brush}"
-            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="18">
+    <Border CornerRadius="12" Background="{DynamicResource Bg0Brush}"
+            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Padding="18">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -27,7 +27,7 @@
             <StackPanel>
                 <TextBlock Text="Multiple executables found" FontSize="15" FontWeight="SemiBold"/>
                 <TextBlock x:Name="txtPickerHint" FontSize="11" Margin="0,6,0,0"
-                           Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource TextDimBrush}" TextWrapping="Wrap"
                            Text="The archive contains more than one runnable file. Pick the one to start."/>
             </StackPanel>
 
@@ -35,7 +35,7 @@
                 <TextBox x:Name="txtPickerFilter" Style="{StaticResource GhlTextBox}"
                          ToolTip="Filter the list"/>
                 <TextBlock x:Name="txtPickerFilterHint" Text="Filter..." IsHitTestVisible="False"
-                           Foreground="{StaticResource TextDimBrush}" FontSize="12"
+                           Foreground="{DynamicResource TextDimBrush}" FontSize="12"
                            VerticalAlignment="Center" Margin="11,0,0,0"/>
             </Grid>
 
@@ -50,11 +50,11 @@
                             <StackPanel>
                                 <TextBlock Text="{Binding Name}" FontSize="12" TextTrimming="CharacterEllipsis"/>
                                 <TextBlock Text="{Binding RelativePath}" FontSize="10"
-                                           Foreground="{StaticResource TextDimBrush}"
+                                           Foreground="{DynamicResource TextDimBrush}"
                                            TextTrimming="CharacterEllipsis"/>
                             </StackPanel>
                             <TextBlock Grid.Column="1" Text="{Binding SizeText}" FontSize="10"
-                                       Foreground="{StaticResource TextDimBrush}" Margin="8,0,0,0"
+                                       Foreground="{DynamicResource TextDimBrush}" Margin="8,0,0,0"
                                        VerticalAlignment="Center"/>
                         </Grid>
                     </DataTemplate>

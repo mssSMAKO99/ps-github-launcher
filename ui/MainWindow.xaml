@@ -19,15 +19,15 @@
     </Window.Resources>
 
     <Grid>
-        <Border x:Name="RootBorder" CornerRadius="12" Background="{StaticResource Bg0Brush}"
-                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+        <Border x:Name="RootBorder" CornerRadius="12" Background="{DynamicResource Bg0Brush}"
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1">
             <Grid>
                 <!-- ===== background layers ===== -->
                 <!-- background image and dimming share one clipped layer, so the
                      rounded corners are respected (a Border does not clip children) -->
                 <Grid x:Name="bgLayer" ClipToBounds="True">
                     <Image x:Name="imgBackground" Stretch="UniformToFill" Opacity="1" IsHitTestVisible="False"/>
-                    <Rectangle x:Name="rectDim" Fill="#0D1117" Opacity="0" IsHitTestVisible="False"/>
+                    <Rectangle x:Name="rectDim" Fill="{DynamicResource Bg0Brush}" Opacity="0" IsHitTestVisible="False"/>
                 </Grid>
 
                 <!-- ===== content ===== -->
@@ -52,10 +52,10 @@
                                        RenderOptions.BitmapScalingMode="HighQuality"/>
                                 <TextBlock Text="GitHub Launcher" FontSize="12.5" FontWeight="SemiBold"
                                            VerticalAlignment="Center"/>
-                                <Border Background="#21262D" CornerRadius="6" Padding="7,2"
+                                <Border Background="{DynamicResource Bg2Brush}" CornerRadius="6" Padding="7,2"
                                         Margin="10,0,0,0" VerticalAlignment="Center">
                                     <TextBlock x:Name="txtBuildTag" Text="dev" FontSize="9.5"
-                                               Foreground="{StaticResource TextDimBrush}"/>
+                                               Foreground="{DynamicResource TextDimBrush}"/>
                                 </Border>
                             </StackPanel>
 
@@ -156,14 +156,14 @@
                                                  ToolTip="Filter by name, description or language (Ctrl+F)"/>
                                         <TextBlock x:Name="txtFilterPlaceholder"
                                                    Text="Filter repositories..." IsHitTestVisible="False"
-                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12"
+                                                   Foreground="{DynamicResource TextDimBrush}" FontSize="12"
                                                    VerticalAlignment="Center" Margin="11,0,0,0"/>
                                     </Grid>
 
                                     <Grid x:Name="spinner" Grid.Column="1" Width="16" Height="16"
                                           Margin="10,0,4,0" Visibility="Collapsed">
-                                        <Ellipse Stroke="#2D333B" StrokeThickness="2"/>
-                                        <Ellipse Stroke="{StaticResource AccentBrush}" StrokeThickness="2"
+                                        <Ellipse Stroke="{DynamicResource BorderWeakBrush}" StrokeThickness="2"/>
+                                        <Ellipse Stroke="{DynamicResource AccentBrush}" StrokeThickness="2"
                                                  StrokeDashArray="1.4 2.6" StrokeDashCap="Round"
                                                  RenderTransformOrigin="0.5,0.5">
                                             <Ellipse.RenderTransform>
@@ -213,7 +213,7 @@
                                                         <TextBlock Text="{Binding Name}" FontSize="12.5"
                                                                    TextTrimming="CharacterEllipsis"/>
                                                         <TextBlock Text="{Binding Owner}" FontSize="10"
-                                                                   Foreground="{StaticResource TextDimBrush}"
+                                                                   Foreground="{DynamicResource TextDimBrush}"
                                                                    TextTrimming="CharacterEllipsis"/>
                                                     </StackPanel>
                                                 </DataTemplate>
@@ -226,7 +226,7 @@
                                                 <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
                                                     <Setter Property="HorizontalAlignment" Value="Right"/>
                                                     <Setter Property="Margin" Value="0,0,12,0"/>
-                                                    <Setter Property="Foreground" Value="{StaticResource WarnBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource WarnBrush}"/>
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
@@ -235,7 +235,7 @@
                                                             Binding="{Binding Language}">
                                             <DataGridTextColumn.ElementStyle>
                                                 <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
-                                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
@@ -244,7 +244,7 @@
                                                             Binding="{Binding UpdatedText}">
                                             <DataGridTextColumn.ElementStyle>
                                                 <Style TargetType="TextBlock" BasedOn="{StaticResource CellText}">
-                                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}"/>
+                                                    <Setter Property="Foreground" Value="{DynamicResource TextDimBrush}"/>
                                                     <Setter Property="FontSize" Value="11"/>
                                                 </Style>
                                             </DataGridTextColumn.ElementStyle>
@@ -255,28 +255,28 @@
                                                 <DataTemplate>
                                                     <Border x:Name="badge" CornerRadius="8" Padding="8,2.5"
                                                             HorizontalAlignment="Left" Margin="4,0,0,0"
-                                                            Background="#21262D">
+                                                            Background="{DynamicResource Bg2Brush}">
                                                         <TextBlock x:Name="badgeText" Text="{Binding Status}"
-                                                                   FontSize="10" Foreground="#8B949E"/>
+                                                                   FontSize="10" Foreground="{DynamicResource TextDimBrush}"/>
                                                     </Border>
                                                     <DataTemplate.Triggers>
                                                         <DataTrigger Binding="{Binding Status}" Value="Downloaded">
                                                             <Setter TargetName="badge" Property="Background"
-                                                                    Value="{StaticResource SuccessSoftBrush}"/>
+                                                                    Value="{DynamicResource SuccessSoftBrush}"/>
                                                             <Setter TargetName="badgeText" Property="Foreground"
-                                                                    Value="{StaticResource SuccessBrush}"/>
+                                                                    Value="{DynamicResource SuccessBrush}"/>
                                                         </DataTrigger>
                                                         <DataTrigger Binding="{Binding Status}" Value="Partial">
                                                             <Setter TargetName="badge" Property="Background"
-                                                                    Value="{StaticResource WarnSoftBrush}"/>
+                                                                    Value="{DynamicResource WarnSoftBrush}"/>
                                                             <Setter TargetName="badgeText" Property="Foreground"
-                                                                    Value="{StaticResource WarnBrush}"/>
+                                                                    Value="{DynamicResource WarnBrush}"/>
                                                         </DataTrigger>
                                                         <DataTrigger Binding="{Binding Status}" Value="Error">
                                                             <Setter TargetName="badge" Property="Background"
-                                                                    Value="{StaticResource DangerSoftBrush}"/>
+                                                                    Value="{DynamicResource DangerSoftBrush}"/>
                                                             <Setter TargetName="badgeText" Property="Foreground"
-                                                                    Value="{StaticResource DangerBrush}"/>
+                                                                    Value="{DynamicResource DangerBrush}"/>
                                                         </DataTrigger>
                                                     </DataTemplate.Triggers>
                                                 </DataTemplate>
@@ -288,10 +288,10 @@
                                 <StackPanel x:Name="pnlEmpty" Grid.Row="1" VerticalAlignment="Center"
                                             HorizontalAlignment="Center" Visibility="Visible">
                                     <TextBlock x:Name="txtEmptyTitle" Text="No repositories loaded" FontSize="13"
-                                               HorizontalAlignment="Center" Foreground="{StaticResource TextDimBrush}"/>
+                                               HorizontalAlignment="Center" Foreground="{DynamicResource TextDimBrush}"/>
                                     <TextBlock x:Name="txtEmptyHint" Text="Enter a GitHub username and press Load"
                                                FontSize="11" Margin="0,6,0,0" HorizontalAlignment="Center"
-                                               Foreground="#5B6470"/>
+                                               Foreground="{DynamicResource TextFaintBrush}"/>
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -311,10 +311,10 @@
                                     <TextBlock x:Name="txtRepoName" Text="No repository selected"
                                                FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                     <TextBlock x:Name="txtRepoDesc" Text="" FontSize="11.5" Margin="0,6,0,0"
-                                               Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"
+                                               Foreground="{DynamicResource TextDimBrush}" TextWrapping="Wrap"
                                                MaxHeight="96"/>
                                     <TextBlock x:Name="txtRepoMeta" Text="" FontSize="10.5" Margin="0,8,0,0"
-                                               Foreground="#5B6470" TextWrapping="Wrap"/>
+                                               Foreground="{DynamicResource TextFaintBrush}" TextWrapping="Wrap"/>
                                 </StackPanel>
 
                                 <StackPanel Grid.Row="1" Margin="14,14,14,0">
@@ -359,13 +359,13 @@
                                                 <TextBlock x:Name="assetName" Text="{Binding Name}" FontSize="11.5"
                                                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                                                 <TextBlock x:Name="assetSize" Grid.Column="1" Text="{Binding SizeText}"
-                                                           FontSize="10" Foreground="{StaticResource TextDimBrush}"
+                                                           FontSize="10" Foreground="{DynamicResource TextDimBrush}"
                                                            Margin="8,0,0,0" VerticalAlignment="Center"/>
                                             </Grid>
                                             <DataTemplate.Triggers>
                                                 <DataTrigger Binding="{Binding Compatible}" Value="False">
-                                                    <Setter TargetName="assetName" Property="Foreground" Value="#5B6470"/>
-                                                    <Setter TargetName="assetSize" Property="Foreground" Value="#454C55"/>
+                                                    <Setter TargetName="assetName" Property="Foreground" Value="{DynamicResource TextFaintBrush}"/>
+                                                    <Setter TargetName="assetSize" Property="Foreground" Value="{DynamicResource TextGhostBrush}"/>
                                                 </DataTrigger>
                                             </DataTemplate.Triggers>
                                         </DataTemplate>
@@ -396,7 +396,7 @@
                     </Grid>
 
                     <!-- ============ FOOTER ============ -->
-                    <Border Grid.Row="2" Background="#B3161B22" BorderBrush="{StaticResource BorderBrush}"
+                    <Border Grid.Row="2" Background="{DynamicResource FooterBrush}" BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="0,1,0,0" CornerRadius="0,0,12,12" Padding="18,10,18,10">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -417,7 +417,7 @@
                                 <TextBlock x:Name="txtStatus" Text="Ready" FontSize="11.5"
                                            VerticalAlignment="Center"/>
                                 <TextBlock x:Name="txtSpeed" Grid.Column="1" Text="" FontSize="11"
-                                           Foreground="{StaticResource TextDimBrush}" Margin="12,0,0,0"
+                                           Foreground="{DynamicResource TextDimBrush}" Margin="12,0,0,0"
                                            VerticalAlignment="Center"/>
 
                                 <StackPanel Grid.Column="2" Orientation="Horizontal">
@@ -433,12 +433,12 @@
 
                 <!-- ===== SETTINGS OVERLAY (gear) ===== -->
                 <Grid x:Name="settingsOverlay" Visibility="Collapsed" Panel.ZIndex="40">
-                    <Border x:Name="settingsScrim" Background="#9E000000"/>
+                    <Border x:Name="settingsScrim" Background="{DynamicResource ScrimBrush}"/>
 
                     <Border x:Name="settingsPanel" Width="520" HorizontalAlignment="Right"
                             VerticalAlignment="Stretch" Margin="0,8,10,10"
-                            Background="{StaticResource Bg0Brush}"
-                            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                            Background="{DynamicResource Bg0Brush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
                             CornerRadius="12" Padding="0">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -478,8 +478,15 @@
                                     <Separator Style="{StaticResource HLine}"/>
 
                                     <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
+                                    <TextBlock Text="Color theme" Style="{StaticResource Label}"
                                                Margin="0,0,0,4"/>
+                                    <ComboBox x:Name="cbTheme" Style="{StaticResource GhlComboBox}"
+                                              ToolTip="Recolors the whole window immediately"/>
+                                    <TextBlock x:Name="txtThemeHint" Style="{StaticResource Hint}"
+                                               Margin="2,6,0,0"
+                                               Text="Applied immediately; saved with Done."/>
+                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
+                                               Margin="0,10,0,4"/>
                                     <Grid>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
@@ -490,6 +497,8 @@
                                                 Style="{StaticResource SmallButton}" Margin="6,0,0,0"
                                                 MinWidth="30" ToolTip="Choose image"/>
                                     </Grid>
+                                    <CheckBox x:Name="chkAnimateBg" Style="{StaticResource GhlCheckBox}"
+                                              Content="Animate GIF backgrounds" Margin="0,8,0,0"/>
                                     <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%"
                                                Style="{StaticResource Label}" Margin="0,10,0,0"/>
                                     <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
@@ -524,11 +533,11 @@
                             </ScrollViewer>
 
                             <Border Grid.Row="2" BorderThickness="0,1,0,0"
-                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
                                     Padding="18,12,18,14">
                                 <Grid>
                                     <TextBlock x:Name="txtSettingsSaved" Text="" FontSize="11"
-                                               Foreground="{StaticResource TextDimBrush}"
+                                               Foreground="{DynamicResource TextDimBrush}"
                                                VerticalAlignment="Center"/>
                                     <Button x:Name="btnSettingsDone" Style="{StaticResource PrimaryButton}"
                                             Content="Done" HorizontalAlignment="Right" MinWidth="90"/>
@@ -541,7 +550,7 @@
                 <!-- ===== TOAST ===== -->
                 <Border x:Name="toast" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                         Margin="0,0,0,86" Padding="16,10" CornerRadius="8" Opacity="0"
-                        Background="#F021262D" BorderBrush="{StaticResource BorderBrush}"
+                        Background="{DynamicResource ToastBrush}" BorderBrush="{DynamicResource BorderBrush}"
                         BorderThickness="1" MaxWidth="620" IsHitTestVisible="False">
                     <TextBlock x:Name="txtToast" Text="" FontSize="11.5" TextWrapping="Wrap"/>
                 </Border>

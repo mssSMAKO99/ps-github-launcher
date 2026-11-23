@@ -280,6 +280,50 @@ Test-Case 'Config JSON round-trip' {
     Assert-Equal 1280 $back.Window.Width
 }
 
+Test-Case 'Themes: four palettes with complete, valid colours' {
+    Add-Type -AssemblyName PresentationCore -ErrorAction SilentlyContinue
+
+    $names = @(Get-GhlThemeNames)
+    Assert-Equal 4 $names.Count 'four built-in themes'
+    Assert-Equal 'Midnight' $names[0] 'Midnight is first and therefore the default'
+    foreach ($expected in @('Midnight', 'Graphite', 'Ocean', 'Light')) {
+        Assert-True ($names -contains $expected) "missing theme '$expected'"
+    }
+
+    $reference = @((Get-GhlTheme -Name 'Midnight').Keys)
+    Assert-True ($reference.Count -ge 30) "the palette looks incomplete ($($reference.Count) tokens)"
+
+    foreach ($name in $names) {
+        $palette = Get-GhlTheme -Name $name
+        Assert-Equal $reference.Count $palette.Keys.Count "theme '$name' has a different token count"
+        foreach ($key in $reference) {
+            Assert-True ($palette.Contains($key)) "theme '$name' is missing '$key'"
+            $brush = Convert-GhlThemeBrush -Value $palette[$key]
+            Assert-True ($brush -is [Windows.Media.SolidColorBrush]) "theme '$name' token '$key' is not a brush"
+        }
+    }
+
+    Assert-Equal 'Light' (Resolve-GhlThemeName -Name 'light') 'theme names are case-insensitive'
+    Assert-Equal 'Midnight' (Resolve-GhlThemeName -Name 'nonsense') 'unknown names fall back to Midnight'
+    Assert-Equal 'Midnight' (Resolve-GhlThemeName -Name '') 'empty names fall back to Midnight'
+}
+
+Test-Case 'Config migrates to version 2 and normalises appearance' {
+    $dir = Join-Path $Global:GHL_TestTemp 'cfg-v1'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $old = [ordered]@{ Version = 1; BaseDir = $dir; Theme = 'nonsense'; AnimateBackground = 'false' }
+    [IO.File]::WriteAllText((Join-Path $dir 'config.json'), ($old | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+
+    $saved = $env:GHL_CONFIG_DIR
+    $env:GHL_CONFIG_DIR = $dir
+    try { $cfg = Get-GhlConfig } finally { $env:GHL_CONFIG_DIR = $saved }
+
+    Assert-Equal 2 $cfg.Version 'an old config is migrated to version 2'
+    Assert-Equal 'Midnight' $cfg.Theme 'an unknown theme becomes Midnight'
+    Assert-True (-not $cfg.AnimateBackground) 'the string "false" must not become true'
+    Assert-True ($cfg.Contains('AnimateBackground')) 'new defaults are merged in'
+}
+
 Test-Case 'Marker write/read + repo state' {
     $base = Join-Path $Global:GHL_TestTemp 'state'
     $dir = Get-GhlRepoDir -BaseDir $base -User 'u' -Repo 'r'

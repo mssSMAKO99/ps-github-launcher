@@ -13,6 +13,7 @@ param(
     [string]$Out = (Join-Path $PSScriptRoot 'ui-screenshot.png'),
     [switch]$AfterDownload,
     [switch]$Settings,
+    [string]$Theme = '',
     [string]$Background = ''
 )
 
@@ -40,6 +41,7 @@ $Global:GhlShotOut = $Out
 $Global:GhlShotDownload = [bool]$AfterDownload
 $Global:GhlShotBackground = [string]$Background
 $Global:GhlShotSettings = [bool]$Settings
+$Global:GhlShotTheme = [string]$Theme
 $Global:GhlShotBase = Join-Path $env:TEMP ('ghl-shot-downloads-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 
 $automation = {
@@ -55,6 +57,8 @@ $automation = {
     $ui.txtFooterInfo.Text = "Downloads: $($Global:GhlShotBase)"
     $ui.txtBg.Text = ''
     $ui.chkRunAfter.IsChecked = $false
+
+    if ($Global:GhlShotTheme) { $ui.cbTheme.SelectedItem = [string]$Global:GhlShotTheme }
 
     if ($Global:GhlShotBackground) {
         $ui.txtBg.Text = [string]$Global:GhlShotBackground

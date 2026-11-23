@@ -20,7 +20,7 @@ irm https://mssSMAKO99.github.io/gl | iex
 - WPF трогает только UI-поток; воркеры пишут в `$sync.Events` (`ConcurrentQueue`), UI забирает события `DispatcherTimer` раз в 120 мс.
 
 ## 3. Карта кода
-- `src/01-Bootstrap` пути/логи/STA → `02-Config` настройки/DPAPI → `03-Api` REST и рейтинг ассетов → `04-Downloader` загрузка → `05-Archive` распаковка → `06-Launcher` папки/маркер/MOTW/суммы/запуск → `07-Workers` задания пула → `08-Main` окно, состояние, события, UI.
+- `src/01-Bootstrap` пути/логи/STA → `02-Config` настройки/DPAPI → `03-Api` REST и рейтинг ассетов → `04-Downloader` загрузка → `05-Archive` распаковка → `06-Launcher` папки/маркер/MOTW/суммы/запуск → `07-Workers` задания пула → `08-Main` окно, состояние, события, UI → `09-Appearance` темы (swap палитры через DynamicResource) и GIF-плеер.
 - `ui/Styles.xaml` палитра и шаблоны, `ui/MainWindow.xaml` главное окно (маркер `<!-- GHL_STYLES_INJECT -->`), `ui/PickerWindow.xaml` выбор файла.
 - `Compile.ps1` сборка, `dev.ps1` запуск из исходников, `tests/` unit+mock+окна, `tools/` XAML-проверка, скриншоты, live-тест.
 
@@ -49,8 +49,9 @@ irm https://mssSMAKO99.github.io/gl | iex
 
 ## 8. Дорожная карта
 - **M1 (готово):** версии релизов, гигиена, багфиксы.
-- **M2 (текущий):** GitHub Actions: `build.yml` (reusable), `ci.yml`, `release.yml`;
-  релиз на тег `v*`, nightly на `main`, `gl` на Pages. См. `CURRENT_TASK.md`.
-- **M3:** темы-палитры и анимированный GIF-фон, раздел «Appearance».
+- **M2 (готово):** GitHub Actions: `build.yml` (reusable), `ci.yml`, `release.yml`;
+  релиз на тег `v*`, nightly на `main`, `gl` на Pages.
+- **M3 (текущий):** 4 темы-палитры с живым переключением, анимированный GIF-фон,
+  секция Appearance, миграция конфига. См. `CURRENT_TASK.md`.
 - **M4:** UX-полировка: мягкая палитра, настройки вкладками, чипы, фокус-ринги.
 - **M5:** избранные репозитории в дополнение к избранным авторам.
