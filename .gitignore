@@ -15,3 +15,7 @@ tools/*.png.tmp
 
 # user state copied into the repo during manual testing
 data/
+
+# agent notes: kept on disk, never committed
+AGENTS.md
+CURRENT_TASK.md
