@@ -12,6 +12,8 @@ function ConvertTo-GhlSafeName {
     $safe = $Name -replace '[<>:"/\\|?*\x00-\x1F]', '_'
     $safe = $safe.Trim().TrimEnd('.')
     if (-not $safe) { return $Fallback }
+    # Windows refuses these names even with an extension (con, aux, com1...)
+    if ($safe -match '(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') { $safe = '_' + $safe }
     if ($safe.Length -gt 120) { $safe = $safe.Substring(0, 120) }
     return $safe
 }
@@ -125,20 +127,11 @@ function Get-GhlRepoState {
     return $result
 }
 
-function Get-GhlRepoStatusText {
-    param([string]$State)
-
-    switch ($State) {
-        'Downloaded' { 'Downloaded' }
-        'Partial'    { 'Partial' }
-        'Error'      { 'Error' }
-        default      { 'Not downloaded' }
-    }
-}
-
 function Get-GhlRepoBadge {
     <#
         Cheap status probe used to paint the list (no recursive scan).
+        'Downloaded' needs both the marker and at least one surviving item, so a
+        folder emptied by hand shows as 'Partial' instead of lying.
         Returns 'Downloaded' | 'Partial' | 'Not downloaded'.
     #>
     param(
@@ -150,15 +143,19 @@ function Get-GhlRepoBadge {
     $dir = Get-GhlRepoDir -BaseDir $BaseDir -User $User -Repo $Repo
     if (-not (Test-Path -LiteralPath $dir)) { return 'Not downloaded' }
 
-    if (Test-Path -LiteralPath (Get-GhlMarkerPath -Directory $dir)) { return 'Downloaded' }
+    $hasMarker = Test-Path -LiteralPath (Get-GhlMarkerPath -Directory $dir)
 
     try {
         $any = Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ne $Global:GHL_MarkerName } |
             Select-Object -First 1
-        if ($any) { return 'Partial' }
+        if ($any) {
+            if ($hasMarker) { return 'Downloaded' }
+            return 'Partial'
+        }
     } catch { }
 
+    if ($hasMarker) { return 'Partial' }
     return 'Not downloaded'
 }
 

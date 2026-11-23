@@ -78,7 +78,7 @@ function Start-GhlMockApi {
     $baseUrl = "http://127.0.0.1:$port"
 
     $script = {
-        param($Listener, $BaseUrl, $ExeB64, $SrcB64, $ScriptB64, $DirectExeB64)
+        param($Listener, $BaseUrl, $ExeB64, $SrcB64, $ScriptB64, $DirectExeB64, $LogPath)
 
         $json = { param($Obj) [Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Depth 8)) }
 
@@ -179,6 +179,64 @@ function Start-GhlMockApi {
             )
         }
 
+        $oldRelease = [pscustomobject]@{
+            tag_name = 'v1.1.0'; name = 'Demo Tool 1.1.0'; body = 'older'; prerelease = $false; draft = $false
+            published_at = '2026-04-01T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/demo-tool/releases/tag/v1.1.0"
+            tarball_url = "$BaseUrl/mockuser/demo-tool/tarball"; zipball_url = "$BaseUrl/mockuser/demo-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'DemoTool-1.1.0-windows-x64.zip'; size = $ExeB64.Length; browser_download_url = "$BaseUrl/dl/old-win.zip"; content_type = 'application/zip' },
+                [pscustomobject]@{ name = 'DemoTool-1.1.0-x64.msix'; size = 4096; browser_download_url = "$BaseUrl/dl/demo.msix"; content_type = 'application/msix' }
+            )
+        }
+
+        $preRelease = [pscustomobject]@{
+            tag_name = 'v1.3.0'; name = 'Demo Tool 1.3.0 beta'; body = 'pre'; prerelease = $true; draft = $false
+            published_at = '2026-05-10T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/demo-tool/releases/tag/v1.3.0"
+            tarball_url = "$BaseUrl/mockuser/demo-tool/tarball"; zipball_url = "$BaseUrl/mockuser/demo-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'DemoTool-1.3.0-linux-x64.tar.gz'; size = 3000; browser_download_url = "$BaseUrl/dl/linux.tar.gz"; content_type = 'application/gzip' }
+            )
+        }
+
+        $draftRelease = [pscustomobject]@{
+            tag_name = 'v1.4.0'; name = 'Demo Tool 1.4.0 draft'; body = 'draft'; prerelease = $false; draft = $true
+            published_at = '2026-06-01T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/demo-tool/releases/tag/v1.4.0"
+            tarball_url = "$BaseUrl/mockuser/demo-tool/tarball"; zipball_url = "$BaseUrl/mockuser/demo-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'DemoTool-1.4.0-windows-x64.zip'; size = $ExeB64.Length; browser_download_url = "$BaseUrl/dl/win.zip"; content_type = 'application/zip' }
+            )
+        }
+
+        # deliberately unsorted: the client must sort by date and drop the draft
+        $demoReleases = @($preRelease, $draftRelease, $oldRelease, $release)
+
+        $secondOld = [pscustomobject]@{
+            tag_name = 'v1.2.0'; name = 'Second Tool 1.2.0'; body = ''; prerelease = $false; draft = $false
+            published_at = '2026-03-01T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/second-tool/releases/tag/v1.2.0"
+            tarball_url = "$BaseUrl/mockuser/second-tool/tarball"; zipball_url = "$BaseUrl/mockuser/second-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'SecondTool-1.2.0-windows.zip'; size = $ExeB64.Length; browser_download_url = "$BaseUrl/dl/win.zip"; content_type = 'application/zip' }
+            )
+        }
+        $secondReleases = @($secondRelease, $secondOld)
+
+        $thirdOld = [pscustomobject]@{
+            tag_name = 'v1.2.0'; name = 'Third Tool 1.2.0'; body = ''; prerelease = $false; draft = $false
+            published_at = '2026-03-02T09:00:00Z'
+            html_url = "$BaseUrl/mockuser/third-tool/releases/tag/v1.2.0"
+            tarball_url = "$BaseUrl/mockuser/third-tool/tarball"; zipball_url = "$BaseUrl/mockuser/third-tool/zipball"
+            assets = @(
+                [pscustomobject]@{ name = 'ThirdTool-1.2.0-linux.tar.gz'; size = 500; browser_download_url = "$BaseUrl/dl/linux.tar.gz"; content_type = 'application/gzip' }
+            )
+        }
+        $thirdReleases = @($thirdRelease, $thirdOld)
+
+        $scriptReleases = @($scriptRelease)
+
         while ($Listener.IsListening) {
             $context = $null
             try { $context = $Listener.GetContext() } catch { break }
@@ -186,6 +244,9 @@ function Start-GhlMockApi {
             try {
                 $path = $context.Request.Url.AbsolutePath
                 $query = $context.Request.Url.Query
+                if ($LogPath) {
+                    try { [IO.File]::AppendAllText($LogPath, $path + [Environment]::NewLine) } catch { }
+                }
                 $exe = [Convert]::FromBase64String($ExeB64)
                 $src = [Convert]::FromBase64String($SrcB64)
                 $direct = [Convert]::FromBase64String($DirectExeB64)
@@ -205,6 +266,18 @@ function Start-GhlMockApi {
                     }
                     '^/repos/mockuser/demo-tool/releases/latest$' {
                         Send-Bytes $context (& $json $release) 'application/json'
+                    }
+                    '^/repos/mockuser/demo-tool/releases$' {
+                        Send-Bytes $context (& $json $demoReleases) 'application/json'
+                    }
+                    '^/repos/mockuser/script-tool/releases$' {
+                        Send-Bytes $context (& $json $scriptReleases) 'application/json'
+                    }
+                    '^/repos/mockuser/second-tool/releases$' {
+                        Send-Bytes $context (& $json $secondReleases) 'application/json'
+                    }
+                    '^/repos/mockuser/third-tool/releases$' {
+                        Send-Bytes $context (& $json $thirdReleases) 'application/json'
                     }
                     '^/repos/mockuser/script-tool/releases/latest$' {
                         Send-Bytes $context (& $json $scriptRelease) 'application/json'
@@ -232,6 +305,12 @@ function Start-GhlMockApi {
                     }
                     '^/dl/win\.zip$' {
                         Send-Bytes $context $exe 'application/zip'
+                    }
+                    '^/dl/old-win\.zip$' {
+                        Send-Bytes $context $exe 'application/zip'
+                    }
+                    '^/dl/demo\.msix$' {
+                        Send-Bytes $context $direct 'application/msix'
                     }
                     '^/dl/linux\.tar\.gz$' {
                         Send-Bytes $context ([Text.Encoding]::UTF8.GetBytes('not a real tarball')) 'application/gzip'
@@ -267,6 +346,9 @@ function Start-GhlMockApi {
     $stopFlag = Join-Path $WorkDir 'stop.flag'
     if (Test-Path -LiteralPath $stopFlag) { Remove-Item -LiteralPath $stopFlag -Force }
 
+    $requestLog = Join-Path $WorkDir 'requests.log'
+    if (Test-Path -LiteralPath $requestLog) { Remove-Item -LiteralPath $requestLog -Force }
+
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript($script)
     [void]$ps.AddParameter('Listener', $listener)
@@ -275,6 +357,7 @@ function Start-GhlMockApi {
     [void]$ps.AddParameter('SrcB64', $srcB64)
     [void]$ps.AddParameter('ScriptB64', $scriptB64)
     [void]$ps.AddParameter('DirectExeB64', $directExeB64)
+    [void]$ps.AddParameter('LogPath', $requestLog)
     $handle = $ps.BeginInvoke()
 
     # wait until the mock answers
@@ -297,6 +380,7 @@ function Start-GhlMockApi {
         PS       = $ps
         Handle   = $handle
         WorkDir  = $WorkDir
+        RequestLog = $requestLog
     }
 }
 

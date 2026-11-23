@@ -19,6 +19,12 @@
 .PARAMETER NoVersionBump
     Keeps the version string untouched.
 
+.PARAMETER Version
+    Embeds this exact version instead of incrementing VERSION. CI passes the
+    release tag (v1.2.0 becomes 1.2.0) so the artifact, the release asset and
+    the Pages copy all carry the same number. Implies -NoVersionBump and
+    rewrites the VERSION file to match.
+
 .PARAMETER Bom
     Writes the artifact with a UTF-8 BOM. Off by default: GitHub Pages serves
     .ps1 as application/octet-stream without a charset, PowerShell 5.1 then
@@ -31,11 +37,16 @@ param(
     [string]$OutFile,
     [switch]$SkipXamlTest,
     [switch]$NoVersionBump,
+    [string]$Version,
     [switch]$Bom
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
+
+# PowerShell variables are case-insensitive: reading VERSION into $version would
+# wipe the -Version parameter. Keep the request in its own variable first.
+$RequestedVersion = $Version
 
 $root = $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
@@ -70,13 +81,23 @@ $version = '1.0.0'
 if (Test-Path -LiteralPath $versionFile) {
     $version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 }
-if (-not $NoVersionBump) {
-    $parts = $version.Split('.')
-    if ($parts.Count -eq 3) {
-        $parts[2] = [string]([int]$parts[2] + 1)
-        $version = $parts -join '.'
+
+if ($RequestedVersion) {
+    # explicit version: CI stamps the release tag, local runs may override too
+    $version = $RequestedVersion.Trim()
+    if ($version.StartsWith('v') -or $version.StartsWith('V')) { $version = $version.Substring(1) }
+    if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.\-]*)?$') {
+        throw "Invalid -Version '$RequestedVersion'. Expected x.y.z, optionally followed by a -suffix (no quotes, no spaces)."
     }
     [IO.File]::WriteAllText($versionFile, $version + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+} elseif (-not $NoVersionBump) {
+    # only a plain x.y.z counter can be incremented; suffixed versions stay put
+    if ($version -match '^([0-9]+)\.([0-9]+)\.([0-9]+)$') {
+        $version = '{0}.{1}.{2}' -f $Matches[1], $Matches[2], ([int]$Matches[3] + 1)
+        [IO.File]::WriteAllText($versionFile, $version + [Environment]::NewLine, (New-Object Text.UTF8Encoding($false)))
+    } else {
+        Write-Step 'version is not a plain x.y.z - bump skipped'
+    }
 }
 Write-Step "version: $version"
 
@@ -279,7 +300,7 @@ $header = @"
     or:
         powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
 
-    Repository: https://github.com/
+    Repository: https://github.com/mssSMAKO99/ps-github-launcher
 #>
 
 #requires -Version 5.1

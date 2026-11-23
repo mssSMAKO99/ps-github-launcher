@@ -42,7 +42,8 @@ function Invoke-GhlDownload {
         [Parameter(Mandatory)][string]$OutFile,
         [string]$Token,
         [object]$Sync,
-        [int]$TimeoutSec = 300
+        [int]$TimeoutSec = 300,
+        [int]$IdleTimeoutSec = 60
     )
 
     Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
@@ -103,13 +104,6 @@ function Invoke-GhlDownload {
             $total = [long]$resp.Content.Headers.ContentLength
         }
 
-        $suggested = ''
-        try {
-            if ($resp.Content.Headers.ContentDisposition -and $resp.Content.Headers.ContentDisposition.FileName) {
-                $suggested = $resp.Content.Headers.ContentDisposition.FileName.Trim('"')
-            }
-        } catch { }
-
         if ($Sync) {
             $Sync.BytesTotal = $total
             $Sync.BytesReceived = 0L
@@ -131,7 +125,22 @@ function Invoke-GhlDownload {
         while ($true) {
             if ($Sync -and $Sync.CancelRequested) { throw 'CANCELLED' }
 
-            $read = $inStream.Read($buffer, 0, $buffer.Length)
+            # A socket that stops sending must not hang the download forever.
+            # Stream.Read is blocking, so the async variant plus a bounded wait
+            # gives the read loop an idle timeout.
+            $readTask = $inStream.ReadAsync($buffer, 0, $buffer.Length)
+            try {
+                if (-not $readTask.Wait($IdleTimeoutSec * 1000)) {
+                    throw (New-GhlError -Kind 'timeout' `
+                            -Message ('No data received for {0} seconds - the connection stalled.' -f $IdleTimeoutSec))
+                }
+                $read = $readTask.Result
+            } catch {
+                if ($_.Exception.Data -and $_.Exception.Data['Kind']) { throw }
+                $inner = $_.Exception.InnerException
+                if ($inner -and $inner.Data -and $inner.Data['Kind']) { throw $inner }
+                throw (New-GhlError -Kind 'network' -Message ("Download interrupted: " + $_.Exception.Message))
+            }
             if ($read -le 0) { break }
 
             $outStream.Write($buffer, 0, $read)
@@ -191,7 +200,6 @@ function Invoke-GhlDownload {
             Path          = $OutFile
             Bytes         = $received
             Total         = $total
-            SuggestedName = $suggested
             FinalUrl      = $(if ($resp.RequestMessage -and $resp.RequestMessage.RequestUri) { [string]$resp.RequestMessage.RequestUri } else { $Url })
         }
     } finally {

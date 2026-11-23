@@ -43,6 +43,16 @@ function Save-Result {
     [IO.File]::WriteAllText($resultFile, $Text, (New-Object Text.UTF8Encoding($false)))
 }
 
+function Get-GhlMockRequestCount {
+    $log = [string]$env:GHL_MOCK_REQUEST_LOG
+    if (-not $log -or -not (Test-Path -LiteralPath $log)) { return -1 }
+    try { return @(Get-Content -LiteralPath $log -ErrorAction Stop).Count } catch { return -1 }
+}
+
+$script:SelectedVersion = ''
+$script:VersionCount = 0
+$script:InstalledText = ''
+
 $automation = {
     param($window)
 
@@ -109,8 +119,7 @@ $automation = {
                             }
                             if ($found -ne $wanted.Count) { throw "only $found of $($wanted.Count) repositories were selectable" }
                             $script:Selected = $found
-                            $script:Stage = 'batch'
-                            $ui.btnDownload.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                            $script:Stage = 'batchwait'
                             return
                         }
 
@@ -124,6 +133,16 @@ $automation = {
                             throw 'selecting a row did not update the details panel'
                         }
                         $script:Stage = 'release'
+                    }
+
+                    'batchwait' {
+                        # the batch uses the version shown in the details panel:
+                        # wait until its release list has actually arrived
+                        if (-not $st.Busy -and $st.ReleaseFor -and $st.SelectedRelease) {
+                            $script:BatchTag = [string]$st.SelectedRelease.Tag
+                            $script:Stage = 'batch'
+                            $ui.btnDownload.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                        }
                     }
 
                     'batch' {
@@ -149,9 +168,39 @@ $automation = {
 
                     'release' {
                         if ($st.ReleaseFor -eq ('{0}/{1}' -f $script:TestUser, $script:TestRepo)) {
-                            if ($st.CurrentRelease) {
-                                $script:ReleaseTag = [string]$st.CurrentRelease.Tag
-                                $script:AssetCount = $st.Assets.Count
+                            if ($st.Releases.Count -gt 0) {
+                                $script:VersionCount = $st.Releases.Count
+
+                                if ($script:TestRepo -eq 'demo-tool') {
+                                    if ($script:VersionCount -ne 3) { throw "expected 3 versions, got $($script:VersionCount)" }
+                                    if ($ui.cbRelease.Items.Count -ne 2) { throw "expected 2 stable versions in the picker, got $($ui.cbRelease.Items.Count)" }
+                                    if (-not $st.SelectedRelease -or $st.SelectedRelease.Tag -ne 'v1.2.0') {
+                                        throw "the newest stable version must be selected, got '$($st.SelectedRelease.Tag)'"
+                                    }
+
+                                    # pre-release filter must reuse the cache, not hit the network
+                                    $before = Get-GhlMockRequestCount
+                                    $ui.chkPrerelease.IsChecked = $true
+                                    if ($ui.cbRelease.Items.Count -ne 3) { throw "pre-release filter did not add the version: $($ui.cbRelease.Items.Count)" }
+                                    $after = Get-GhlMockRequestCount
+                                    if ($before -ge 0 -and $after -gt $before) { throw "the pre-release filter made $($after - $before) HTTP request(s)" }
+                                    $ui.chkPrerelease.IsChecked = $false
+                                    if ($ui.cbRelease.Items.Count -ne 2) { throw 'turning the pre-release filter off did not restore the list' }
+
+                                    # switch to an older version: assets must follow
+                                    $oldItem = $ui.cbRelease.Items | Where-Object { $_.Tag -eq 'v1.1.0' } | Select-Object -First 1
+                                    if (-not $oldItem) { throw 'v1.1.0 is missing from the version picker' }
+                                    $ui.cbRelease.SelectedItem = $oldItem
+                                    if (-not $st.SelectedRelease -or $st.SelectedRelease.Tag -ne 'v1.1.0') {
+                                        throw "selecting v1.1.0 did not update the current release: '$($st.SelectedRelease.Tag)'"
+                                    }
+                                    $script:SelectedVersion = 'v1.1.0'
+                                    $script:ReleaseTag = 'v1.1.0'
+                                } else {
+                                    if (-not $st.SelectedRelease) { throw 'no release was auto-selected' }
+                                    $script:SelectedVersion = [string]$st.SelectedRelease.Tag
+                                    $script:ReleaseTag = [string]$st.SelectedRelease.Tag
+                                }
 
                                 $firstCompatible = $null
                                 $sawIncompatibleFirst = $false
@@ -162,9 +211,15 @@ $automation = {
 
                                 if (-not $firstCompatible) { throw 'no compatible asset was offered' }
                                 if ($sawIncompatibleFirst) { throw 'incompatible assets must be listed after compatible ones' }
-                                if ($firstCompatible.Name -notmatch 'windows') { throw "wrong asset chosen: $($firstCompatible.Name)" }
+                                if ($script:TestRepo -eq 'demo-tool' -and $firstCompatible.Name -notmatch '1\.1\.0') {
+                                    throw "assets did not switch to v1.1.0: $($firstCompatible.Name)"
+                                }
+                                if ($script:TestRepo -ne 'demo-tool' -and $firstCompatible.Name -notmatch 'windows') {
+                                    throw "wrong asset chosen: $($firstCompatible.Name)"
+                                }
 
                                 $script:AssetName = $firstCompatible.Name
+                                $script:AssetCount = $st.Assets.Count
                                 $script:SelectedIndex = $ui.lstAssets.SelectedIndex
                             } else {
                                 # repository without releases must fall back to source mode
@@ -173,6 +228,7 @@ $automation = {
                                 if ($st.Assets.Count -ne 1 -or -not $st.Assets[0].IsSource) {
                                     throw 'the source archive must be listed as the only asset'
                                 }
+                                $script:VersionCount = 0
                                 $script:ReleaseTag = '(none)'
                                 $script:AssetName = 'source'
                                 $script:AssetCount = 1
@@ -196,6 +252,15 @@ $automation = {
                             if ($script:BatchDone -ne 2) { throw "expected 2 downloaded repos, got $($script:BatchDone)" }
                             if ($script:BatchSkipped -ne 1) { throw "expected 1 skipped repo, got $($script:BatchSkipped)" }
 
+                            # every downloaded repo must carry the version chosen in the panel
+                            foreach ($name in @('demo-tool', 'second-tool')) {
+                                $dir = Get-GhlRepoDir -BaseDir $script:TestBaseDir -User $script:TestUser -Repo $name
+                                $m = Get-Content -LiteralPath (Join-Path $dir '.ghl.json') -Raw | ConvertFrom-Json
+                                if ([string]$m.Tag -ne [string]$script:BatchTag) {
+                                    throw "$name was downloaded as '$($m.Tag)' instead of '$($script:BatchTag)'"
+                                }
+                            }
+
                             $badge = ''
                             foreach ($r in $st.AllRepos) {
                                 if ($r.Name -eq 'demo-tool') { $badge = $r.Status }
@@ -203,9 +268,10 @@ $automation = {
                             if ($badge -ne 'Downloaded') { throw "badge for demo-tool is '$badge'" }
                             $script:DestDir = $script:TestBaseDir
                             $script:Badge = "$($script:BatchDone) done / $($script:BatchSkipped) skipped"
-                            $script:ReleaseTag = '(batch)'
+                            $script:ReleaseTag = "(batch $($script:BatchTag))"
                             $script:AssetName = "$($script:Selected) selected"
-                            $script:MarkerTag = ''
+                            $script:MarkerTag = [string]$script:BatchTag
+                            $script:InstalledText = ''
                             $script:Stage = 'done'
                             return
                         }
@@ -258,8 +324,39 @@ $automation = {
 
                         $marker = Get-Content -LiteralPath (Join-Path $dir '.ghl.json') -Raw | ConvertFrom-Json
                         $script:MarkerTag = [string]$marker.Tag
+                        if ($script:TestRepo -eq 'demo-tool') {
+                            if ($script:MarkerTag -ne $script:SelectedVersion) {
+                                throw "the marker says '$($script:MarkerTag)' instead of '$($script:SelectedVersion)'"
+                            }
+                            $script:InstalledText = [string]$ui.txtInstalled.Text
+                            if ($script:InstalledText -notmatch [regex]::Escape($script:SelectedVersion)) {
+                                throw "the installed hint does not show the version: '$($script:InstalledText)'"
+                            }
 
-                        $script:Stage = 'done'
+                            # regression: a second toast must be visible after the first faded out
+                            Show-GhlToast -Message 'first toast' -Kind 'info' -Ms 100
+                            $script:ToastAt = Get-Date
+                            $script:Stage = 'toast'
+                        } else {
+                            $script:Stage = 'done'
+                        }
+                    }
+
+                    'toast' {
+                        if (((Get-Date) - $script:ToastAt).TotalMilliseconds -ge 700) {
+                            Show-GhlToast -Message 'second toast' -Kind 'info' -Ms 5000
+                            $script:ToastAt = Get-Date
+                            $script:Stage = 'toastcheck'
+                        }
+                    }
+
+                    'toastcheck' {
+                        if (((Get-Date) - $script:ToastAt).TotalMilliseconds -ge 250) {
+                            if ([double]$ui.toast.Opacity -lt 0.99) {
+                                throw "the second toast is invisible (Opacity=$($ui.toast.Opacity))"
+                            }
+                            $script:Stage = 'done'
+                        }
                     }
                 }
 
@@ -273,7 +370,7 @@ $automation = {
 
                 if ($script:Stage -eq 'done') {
                     $s.Stop()
-                    Save-Result ("OK`nrepos=$($script:RepoCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`nbadge=$($script:Badge)`ndir=$($script:DestDir)")
+                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ndir=$($script:DestDir)")
                     $ui.Window.Close()
                 }
             } catch {

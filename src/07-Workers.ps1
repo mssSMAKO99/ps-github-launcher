@@ -39,7 +39,7 @@ function Get-GhlFailureInfo {
 function Get-GhlWorkerRepos {
     return @'
 
-param($Sync, $User, $Token)
+param($Sync, $User, $Token, $BaseDir, [int]$Request)
 
 try {
     $Sync.Phase = 'repos'
@@ -51,6 +51,15 @@ try {
     $resetAt = ''
     if ($r.ResetAt) { $resetAt = ([DateTime]$r.ResetAt).ToString('o') }
 
+    # the badge needs a disk probe per repository; do it here, not on the UI thread
+    if ($r.Ok) {
+        foreach ($item in @($r.Data)) {
+            if ($null -eq $item) { continue }
+            $badge = Get-GhlRepoBadge -BaseDir ([string]$BaseDir) -User ([string]$item.Owner) -Repo ([string]$item.Name)
+            $item | Add-Member -NotePropertyName Badge -NotePropertyValue $badge -Force
+        }
+    }
+
     $Sync.Events.Enqueue(@{
         Kind      = 'Repos'
         Ok        = [bool]$r.Ok
@@ -60,12 +69,14 @@ try {
         Remaining = [int]$r.Remaining
         ResetAt   = $resetAt
         User      = [string]$User
+        Request   = [int]$Request
     })
 } catch {
     $info = Get-GhlFailureInfo $_
     $Sync.Events.Enqueue(@{
         Kind = 'Repos'; Ok = $false; Data = $null
-        Message = $info.Message; ErrKind = $info.Kind; Remaining = -1; User = [string]$User
+        Message = $info.Message; ErrKind = $info.Kind; Remaining = -1
+        User = [string]$User; Request = [int]$Request
     })
 }
 '@
@@ -74,30 +85,36 @@ try {
 function Get-GhlWorkerRelease {
     return @'
 
-param($Sync, $User, $Repo, $Token, [bool]$IncludePrerelease)
+param($Sync, $User, $Repo, $Token, [int]$Request)
 
 try {
     $Sync.Phase = 'release'
     $Sync.StatusText = "Loading releases of $Repo..."
     $Sync.ProgressPercent = -1.0
 
-    $r = Get-GhlLatestRelease -User $User -Repo $Repo -Token $Token -IncludePrerelease:$IncludePrerelease
+    $r = Get-GhlReleases -User $User -Repo $Repo -Token $Token
+
+    $resetAt = ''
+    if ($r.ResetAt) { $resetAt = ([DateTime]$r.ResetAt).ToString('o') }
 
     $Sync.Events.Enqueue(@{
-        Kind    = 'Release'
-        Ok      = [bool]$r.Ok
-        Data    = $r.Data
-        Message = [string]$r.Message
-        ErrKind = [string]$r.Kind
-        User    = [string]$User
-        Repo    = [string]$Repo
+        Kind      = 'Release'
+        Ok        = [bool]$r.Ok
+        Releases  = @($r.Data)
+        Message   = [string]$r.Message
+        ErrKind   = [string]$r.Kind
+        Remaining = [int]$r.Remaining
+        ResetAt   = $resetAt
+        User      = [string]$User
+        Repo      = [string]$Repo
+        Request   = [int]$Request
     })
 } catch {
     $info = Get-GhlFailureInfo $_
     $Sync.Events.Enqueue(@{
-        Kind = 'Release'; Ok = $false; Data = $null
-        Message = $info.Message; ErrKind = $info.Kind
-        User = [string]$User; Repo = [string]$Repo
+        Kind = 'Release'; Ok = $false; Releases = @()
+        Message = $info.Message; ErrKind = $info.Kind; Remaining = -1
+        User = [string]$User; Repo = [string]$Repo; Request = [int]$Request
     })
 }
 '@
@@ -111,14 +128,16 @@ param($Sync, $Job)
 $dest = [string]$Job.DestDir
 $mode = [string]$Job.Mode
 $fileName = [string]$Job.FileName
+$releaseForChecksums = $null
+$rateRemaining = -1
 
 try {
     if (-not (Test-Path -LiteralPath $dest)) {
         New-Item -ItemType Directory -Path $dest -Force | Out-Null
     }
 
-    # batch mode passes no Url: resolve the best Windows asset for this repo here,
-    # inside the worker, so the UI thread never waits on the API
+    # batch mode passes no Url: resolve the chosen release (or its best Windows
+    # asset) here, inside the worker, so the UI thread never waits on the API
     if (-not $Job.Url) {
         $Sync.Phase = 'release'
         $Sync.StatusText = "Resolving $($Job.Repo)..."
@@ -128,42 +147,75 @@ try {
             $Job.Url = $src.Url
             $fileName = $src.FileName
         } else {
-            $rel = Get-GhlLatestRelease -User $Job.User -Repo $Job.Repo -Token $Job.Token `
-                -IncludePrerelease:([bool]$Job.IncludePrerelease)
+            $list = Get-GhlReleases -User $Job.User -Repo $Job.Repo -Token $Job.Token
+            $rateRemaining = [int]$list.Remaining
 
-            if (-not $rel.Ok -and $rel.Kind -eq 'norelease') {
+            if (-not $list.Ok -and $list.Kind -eq 'norelease') {
                 # no release at all: fall back to the source archive
                 $mode = 'Source'
                 $Job.Mode = 'Source'
                 $src = New-GhlSourceArchive -User $Job.User -Repo $Job.Repo
                 $Job.Url = $src.Url
                 $fileName = $src.FileName
-            } elseif (-not $rel.Ok) {
-                throw ($rel.Message)
+            } elseif (-not $list.Ok) {
+                throw ($list.Message)
             } else {
+                $rel = $null
+                if ($Job.Tag) {
+                    $rel = Select-GhlReleaseByTag -Releases $list.Data -Tag ([string]$Job.Tag)
+                    if (-not $rel) {
+                        $ex = New-Object System.Exception(
+                            "$($Job.Tag) is not available for $($Job.User)/$($Job.Repo).")
+                        $ex.Data['Kind'] = 'versionmissing'
+                        throw $ex
+                    }
+                } else {
+                    # no tag selected: newest stable, or newest overall when asked
+                    $candidates = @($list.Data)
+                    if (-not [bool]$Job.IncludePrerelease) {
+                        $stable = @($candidates | Where-Object { -not $_.Prerelease })
+                        if ($stable.Count -gt 0) { $candidates = $stable }
+                    }
+                    if ($candidates.Count -eq 0) {
+                        $ex = New-Object System.Exception(
+                            "No suitable release is available for $($Job.User)/$($Job.Repo).")
+                        $ex.Data['Kind'] = 'norelease'
+                        throw $ex
+                    }
+                    $rel = $candidates[0]
+                }
+
                 $best = $null
                 $bestScore = [int]::MinValue
-                foreach ($a in @($rel.Data.Assets)) {
+                foreach ($a in @($rel.Assets)) {
                     if (-not $a.Compatible) { continue }
                     if ([int]$a.Score -gt $bestScore) { $bestScore = [int]$a.Score; $best = $a }
                 }
                 if (-not $best) {
-                    $ex = New-Object System.Exception("No Windows-compatible asset in $($rel.Data.Tag).")
+                    $ex = New-Object System.Exception("No Windows-compatible asset in $($rel.Tag).")
                     $ex.Data['Kind'] = 'noasset'
                     throw $ex
                 }
                 $Job.Url = [string]$best.Url
                 $fileName = [string]$best.Name
-                $Job.Tag = [string]$rel.Data.Tag
-
-                try {
-                    $tempDir = Join-Path $env:TEMP ('ghl-cs-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-                    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-                    $Job.Checksums = Get-GhlPublishedChecksums -Release $rel.Data -Token $Job.Token -TempDir $tempDir
-                    Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-                } catch { }
+                $Job.Tag = [string]$rel.Tag
+                $releaseForChecksums = $rel
             }
         }
+    } elseif ($Job.Release) {
+        # single download: the UI passes the release it showed, checksums are
+        # fetched here instead of on the UI thread
+        $releaseForChecksums = $Job.Release
+    }
+
+    # checksums, if the release publishes them (best effort, never fatal)
+    if (-not $Job.Checksums -and $releaseForChecksums) {
+        try {
+            $tempDir = Join-Path (Join-Path (Get-GhlAppDir) 'tmp') ('cs-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+            $Job.Checksums = Get-GhlPublishedChecksums -Release $releaseForChecksums -Token $Job.Token -TempDir $tempDir
+            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        } catch { }
     }
 
     # archives are staged outside the repository folder: a copy sitting next to
@@ -172,7 +224,8 @@ try {
     $isArchive = ($kind -eq 'zip' -or $kind -eq 'targz')
 
     if ($isArchive) {
-        $staging = Join-Path (Join-Path $env:LOCALAPPDATA 'GitHubLauncher\tmp') ([guid]::NewGuid().ToString('N').Substring(0, 12))
+        $stagingRoot = Join-Path (Get-GhlAppDir) 'tmp'
+        $staging = Join-Path $stagingRoot ([guid]::NewGuid().ToString('N').Substring(0, 12))
         if (-not (Test-Path -LiteralPath $staging)) {
             New-Item -ItemType Directory -Path $staging -Force | Out-Null
         }
@@ -267,6 +320,9 @@ try {
     [void](Set-GhlMarker -Directory $dest -User ([string]$Job.User) -Repo ([string]$Job.Repo) `
             -Mode $mode -Tag ([string]$Job.Tag) -Executable $exePath -Files $files)
 
+    # .msix/.appx are installed by Windows, not simply executed
+    $launchable = -not ($fileName -match '(?i)\.(msix|msixbundle|appx|appxbundle)$')
+
     $Sync.Events.Enqueue(@{
         Kind        = 'Download'
         Ok          = $true
@@ -279,6 +335,8 @@ try {
         User        = [string]$Job.User
         Bytes       = $dl.Bytes
         AutoRun     = [bool]$Job.AutoRun
+        Launchable  = $launchable
+        Remaining   = [int]$rateRemaining
         Hash        = $hashNote
     })
 } catch {
@@ -292,6 +350,7 @@ try {
         ErrKind   = $info.Kind
         Repo      = [string]$Job.Repo
         User      = [string]$Job.User
+        Remaining = [int]$rateRemaining
     })
 }
 '@
@@ -340,17 +399,18 @@ function Join-GhlWorkerScript {
 }
 
 function Get-GhlWorkerNames {    return @(
-        'Get-GhlUserRepos', 'Get-GhlRepoInfo', 'Get-GhlLatestRelease', 'Get-GhlReleaseList',
+        'Get-GhlUserRepos', 'Get-GhlRepoInfo', 'Get-GhlLatestRelease', 'Get-GhlReleases',
+        'Select-GhlReleaseByTag',
         'Invoke-GhlApi', 'Invoke-GhlHttp', 'Invoke-GhlDownload',
         'New-GhlApiResult', 'New-GhlSourceArchive', 'New-GhlError',
-        'Convert-GhlRepo', 'Convert-GhlRelease', 'Convert-GhlAsset', 'Convert-GhlResetTime',
-        'Test-GhlAssetCompatible', 'Get-GhlAssetScore', 'Get-GhlErrorMessage',
+        'Convert-GhlRepo', 'Convert-GhlRelease', 'Convert-GhlAsset', 'Convert-GhlApiDate',
+        'Convert-GhlResetTime',
+        'Test-GhlAssetCompatible', 'Get-GhlAssetScore',
         'Expand-GhlArchive', 'Expand-GhlZip', 'Expand-GhlTarGz', 'Move-GhlContentsUp',
         'Get-GhlArchiveKind', 'Test-GhlSafePath', 'Find-GhlExecutables',
         'Stop-GhlPartialFile',
         'Get-GhlRepoDir', 'Get-GhlMarkerPath', 'Set-GhlMarker', 'Read-GhlMarker',
-        'Get-GhlRepoFileList', 'Get-GhlRepoState', 'ConvertTo-GhlSafeName',
-        'Start-GhlItem', 'Open-GhlFolder',
+        'Get-GhlRepoFileList', 'Get-GhlRepoState', 'Get-GhlRepoBadge', 'ConvertTo-GhlSafeName',
         'Write-GhlLog', 'Format-GhlSize', 'Format-GhlDuration', 'Get-GhlFreeSpace',
         'Get-GhlAppDir',
         'Set-GhlMarkOfTheWeb', 'Get-GhlFileSignature', 'Get-GhlPublishedChecksums',

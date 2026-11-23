@@ -1,0 +1,22 @@
+# Pull requests and branches: compile and test, never publish.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+    tags-ignore: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    uses: ./.github/workflows/build.yml

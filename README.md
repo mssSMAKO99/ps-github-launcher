@@ -4,17 +4,23 @@ A single-file WPF launcher for GitHub repositories, in the spirit of ChrisTitusT
 search a user's repositories, pick a release asset (or the source archive), download it into a
 strict folder layout, and optionally run it right away.
 
-It ships as **one compiled `.ps1`** that can be executed without cloning anything:
+It ships as **one compiled `.ps1`**, usable without cloning anything:
 
 ```powershell
-irm msssmako99.github.io/gl | iex
+# quick start on any PC with Windows PowerShell
+irm https://mssSMAKO99.github.io/gl | iex
 ```
 
-or
+or save the file and run it directly:
 
 ```powershell
-powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
+powershell.exe -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 ```
+
+The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one.
+
+[![ci](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml)
+[![release](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml)
 
 ---
 
@@ -26,9 +32,9 @@ powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
 | Favourites | Pin logins with the star button. The editable combo box offers them next time; managed in Settings. Stored case-insensitively, max 15. |
 | Auth | Optional PAT (fine-grained or classic). Stored with DPAPI (`ConvertFrom-SecureString`), never in plaintext unless DPAPI is unavailable. |
 | Filter | Client-side, 250 ms debounce, matches name / description / language, token-based (`rust cli`). |
-| Releases | Latest release, or the newest one incl. pre-release when the checkbox is on. Repos without releases silently fall back to source mode. |
-| Batch | Select several repositories (Ctrl/Shift-click, Ctrl+A) and download them in one go. Sequential, one at a time; a repo with no usable Windows asset is skipped and reported. |
-| Assets | Full asset list, sorted: usable Windows packages first, other-OS builds and checksums greyed out. |
+| Releases | Every published version (up to 30) in a picker, newest stable selected by default. Drafts are hidden; pre-releases appear when the checkbox is on. The panel shows what is already installed and whether the selected version is newer. |
+| Batch | Select several repositories (Ctrl/Shift-click, Ctrl+A) and download them in one go. The version chosen in the details panel is used for all of them; repositories that do not have it, or have no usable Windows asset, are skipped and reported. |
+| Assets | Full asset list for the selected version, sorted: usable Windows packages first, other-OS builds and checksums greyed out. `.msix`/`.appx` packages are offered for download but never auto-launched. |
 | Download | HttpClient streaming, real byte progress, smoothed MB/s, ETA, cancel button, `.part` + atomic rename. |
 | Safety | Extracted executables get a `Zone.Identifier` mark (ZoneId=3). Published checksums are verified. Launching asks for confirmation with size, SHA-256 and Authenticode status. |
 | Extract | `.zip` (zip-slip protected) and `.tar.gz` (member names *and* links validated). Single root folder is unwrapped automatically. |
@@ -73,7 +79,7 @@ GithubLauncher/
 ├─ Compile.ps1              # build: concatenate + embed + validate
 ├─ dev.ps1                  # run straight from source
 ├─ VERSION                  # auto-incremented by the build
-├─ GitHubLauncher.ps1       # build artifact (generated, not committed)
+├─ GitHubLauncher.ps1       # build artifact (committed; also published as a release and as Pages `gl`)
 ├─ ui/
 │  ├─ Styles.xaml           # palette, control templates, DataGrid + scrollbar styles
 │  ├─ MainWindow.xaml       # main window
@@ -100,6 +106,9 @@ GithubLauncher/
    └─ MockApi.ps1           # HttpListener stand-in for the GitHub API
 ```
 
+CI lives in `.github/workflows/`: `build.yml` is the reusable build+test job, `ci.yml` runs it on
+branches and pull requests, `release.yml` publishes releases and deploys `gl` to Pages.
+
 The numeric prefixes are the concatenation order used by `Compile.ps1`; the build fails if the
 order does not match.
 
@@ -113,7 +122,7 @@ powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\Compile.ps1
 
 The build:
 
-1. increments `VERSION`,
+1. increments `VERSION` (unless `-NoVersionBump`/`-Version` says otherwise),
 2. generates `ui/assets/icon.png` if missing,
 3. embeds all three XAML documents and the icon as base64,
 4. concatenates `src/*.ps1` in order,
@@ -128,6 +137,17 @@ The build:
     Pages both do that). Pass `-Bom` to opt out (then the file is only usable with `-File`),
 11. prints size, encoding, line count and SHA-256.
 
+CI and release builds stamp an explicit version instead of guessing:
+
+```powershell
+powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\Compile.ps1 `
+    -NoVersionBump -Version 1.2.3
+```
+
+`-Version` accepts `x.y.z` (optionally with a `-suffix`), strips a leading `v`, rewrites `VERSION`
+to match and takes precedence over `-NoVersionBump`. A malformed value fails the build before
+anything is written.
+
 ## Develop
 
 ```powershell
@@ -139,14 +159,15 @@ after a restart. XAML is read from `ui/` instead of the embedded copy.
 
 ## Distribution: `irm | iex`
 
-The artifact is meant to be published as a single flat file and run with:
+The artifact is published as a single flat file and run with:
 
 ```powershell
-irm https://<you>.github.io/gl | iex
+irm https://mssSMAKO99.github.io/gl | iex
 ```
 
+The same bytes are available as `GitHubLauncher.ps1` (repository root, release asset and Pages copy).
 Everything (`Styles.xaml`, `MainWindow.xaml`, `PickerWindow.xaml`, the icon) is embedded, so there is
-nothing else to host — one file, no folders.
+nothing else to host - one file, no folders.
 
 Two constraints make or break that path, and both are enforced by `Compile.ps1`:
 
@@ -158,6 +179,44 @@ Two constraints make or break that path, and both are enforced by `Compile.ps1`:
 `Invoke-RestMethod` turns such a response into a **String**, which is why `irm ... | iex` works while
 `iwr ... | iex` does not (it returns `Byte[]`). `tests\Run-Tests.ps1` asserts both properties on the
 built artifact.
+
+---
+
+## Continuous delivery
+
+Three workflows, all on `windows-latest` for the build and Windows PowerShell 5.1 throughout:
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `ci.yml` | pull requests, pushes to branches | calls the reusable build: offline unit tests, mock API/download tests (`-NoUi`), compile, ASCII/no-BOM gate. Publishes nothing. |
+| `release.yml` | push of a `v*` tag, push to `main`, manual | same build, then a GitHub Release (tags) or the `nightly` prerelease (`main`), and a `<pages>` deploy. |
+| `build.yml` | called by the two above | builds `dist/GitHubLauncher.ps1`, extensionless `dist/gl` and `dist/SHA256SUMS.txt`, uploads them as the `ghl-dist` artifact. |
+
+Cutting a release is a tag push:
+
+```powershell
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The build stamps `1.2.3` into the artifact, every gate must pass, and the release gets
+`GitHubLauncher.ps1`, `gl` and `SHA256SUMS.txt`. Pushes to `main` rebuild the same way and refresh
+the `nightly` prerelease instead of creating a stable one.
+
+### Pages deploy
+
+`https://mssSMAKO99.github.io/gl` is served from a **different** repository
+(`mssSMAKO99/msssmako99.github.io`), and a workflow's `GITHUB_TOKEN` cannot write there. The Pages
+job therefore needs a repository secret:
+
+1. Create a fine-grained PAT with **Contents: read and write** on
+   `mssSMAKO99/msssmako99.github.io` only.
+2. Add it as `PAGES_DEPLOY_TOKEN` in *Settings -> Secrets and variables -> Actions* of this
+   repository.
+
+The job clones that repository, replaces the root `gl`, commits with the bot identity and pushes.
+Deploys share the `ghl-pages-deploy` concurrency group and never cancel each other. When the secret
+is missing the job emits a warning and skips, so forks still build green.
 
 ---
 
@@ -179,12 +238,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-UiRepeat.ps1
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tools\Ui-Integration.ps1 -User octocat -Repo Hello-World
 ```
 
+CI runs suites 1 and 2 (`Run-MockTests.ps1 -NoUi`): the hosted Windows runner has no reliable desktop
+for the window scenarios, so those - and the screenshot check - stay a local acceptance step.
+
 What they cover:
 
 | Suite | Coverage |
 | --- | --- |
 | `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
-| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: release asset -> exe -> marker (+ MOTW), no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch |
+| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
 | `Run-UiRepeat.ps1` | the window opens twice in one PowerShell session, runs via `-File`, and refuses to start in an MTA host |
 | `Ui-Integration.ps1` | the same flow against api.github.com |
 
@@ -220,8 +282,8 @@ powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 ```
 UI thread (STA)                         RunspacePool (1..4 threads)
 ────────────────                        ───────────────────────────
-Window / DataGrid / ProgressBar         Invoke-GhlUserRepos
-  ▲                                     Invoke-GhlLatestRelease
+Window / DataGrid / ProgressBar         Get-GhlUserRepos
+  ▲                                     Get-GhlReleases
   │ DispatcherTimer, 120 ms             Invoke-GhlDownload
   │                                     Expand-GhlArchive
   └── reads $sync fields                Find-GhlExecutables
@@ -233,6 +295,8 @@ Window / DataGrid / ProgressBar         Invoke-GhlUserRepos
 * The UI drains the queue on a timer and re-renders. No `Dispatcher.Invoke` from a worker, so no
   deadlocks on close and no per-chunk message-pump flooding.
 * `$sync` is a `[hashtable]::Synchronized` holding only primitives and the queue.
+* The background-image download has its own `$syncBg` queue, so it can never overwrite the progress
+  or phase of a repository download.
 * One live job per kind; starting a new search stops the previous pipeline.
 * Closing the window cancels the transfer, stops every pipeline, closes the pool — the host process
   exits instead of lingering.
@@ -301,7 +365,8 @@ or cancelled download can never be mistaken for a complete one.
 * Set `GHL_CONFIG_DIR` to point the whole app at a different settings folder (used by the tests so
   they never touch your real config).
 
-Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB).
+Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB); with `GHL_CONFIG_DIR`
+set, they go to `$env:GHL_CONFIG_DIR\logs` together with the config.
 
 ---
 
@@ -313,7 +378,9 @@ Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB).
 | No public repos | `200` + `[]` | empty state + warning toast |
 | IP rate limit | `403` + `X-RateLimit-Remaining: 0` | message with reset time, token field focused |
 | Bad PAT | `401` | "GitHub rejected the token", token field focused |
-| No releases | `404` on `/releases/latest` | falls back to source mode, Release radio disabled |
+| No releases | `200` + empty `/releases` list | "No releases - source only", source mode selected |
+| Pre-release only | non-empty list, filter off | hint to enable "Include pre-release" |
+| Version missing in batch | batch tag not found | repository skipped, reported in the batch summary |
 | Truncated transfer | bytes < `Content-Length` | error, `.part` deleted |
 | Broken archive | extract exception | error, marker not written, badge stays `Partial` |
 | Zip-slip entry | path outside destination | archive rejected before anything is written |
