@@ -269,6 +269,42 @@ Test-Case 'Favourites: dedupe, order and the single-element JSON trap' {
     Assert-Equal 15 @(Get-GhlFavoriteUsers -Config $cfg).Count 'the list is capped at 15'
 }
 
+Test-Case 'Favourite repositories: normalise, dedupe, cap' {
+    $cfg = Get-GhlDefaultConfig
+
+    $cfg.FavoriteRepos = Add-GhlFavoriteRepo -Config $cfg -Repo 'mssSMAKO99/ps-github-launcher'
+    Assert-Equal 1 @($cfg.FavoriteRepos).Count 'one repository added'
+
+    # the single-element JSON trap applies here as well
+    $json = $cfg | ConvertTo-Json -Depth 8
+    $back = Convert-GhlToHashtable (ConvertFrom-Json $json)
+    $cfg.FavoriteRepos = $back.FavoriteRepos
+    Assert-Equal 'mssSMAKO99/ps-github-launcher' ([string](@(Get-GhlFavoriteRepos -Config $cfg)[0]))
+
+    # case-insensitive dedupe, newest first
+    $cfg.FavoriteRepos = Add-GhlFavoriteRepo -Config $cfg -Repo 'microsoft/vscode'
+    $cfg.FavoriteRepos = Add-GhlFavoriteRepo -Config $cfg -Repo 'MSSSMAKO99/PS-GitHub-Launcher'
+    $list = @(Get-GhlFavoriteRepos -Config $cfg)
+    Assert-Equal 2 $list.Count 'duplicates are collapsed'
+    Assert-Equal 'MSSSMAKO99/PS-GitHub-Launcher' $list[0] 'a re-added repository moves to the front'
+    Assert-Equal 'microsoft/vscode' $list[1]
+
+    Assert-True (Test-GhlFavoriteRepo -Config $cfg -Repo 'msssmako99/ps-github-launcher') 'lookup ignores case'
+    Assert-True (-not (Test-GhlFavoriteRepo -Config $cfg -Repo 'nobody/nothing')) 'unknown repositories are not favourites'
+
+    $cfg.FavoriteRepos = Remove-GhlFavoriteRepo -Config $cfg -Repo 'Microsoft/VSCode'
+    Assert-Equal 1 @(Get-GhlFavoriteRepos -Config $cfg).Count 'removal ignores case'
+
+    # junk is filtered, slashes are trimmed
+    $cfg.FavoriteRepos = @('', '   ', 'no-slash', 'a/b/c', '/octocat/Hello-World/', 'bad name/repo')
+    $list = @(Get-GhlFavoriteRepos -Config $cfg)
+    Assert-Equal 1 $list.Count 'only a valid owner/repo survives'
+    Assert-Equal 'octocat/Hello-World' $list[0] 'surrounding slashes are trimmed'
+
+    $cfg.FavoriteRepos = @(1..40 | ForEach-Object { "owner/repo$_" })
+    Assert-Equal 30 @(Get-GhlFavoriteRepos -Config $cfg).Count 'the list is capped at 30'
+}
+
 Test-Case 'Config JSON round-trip' {
     $cfg = Get-GhlDefaultConfig
     $cfg.BaseDir = 'D:\Downloads'
@@ -308,7 +344,7 @@ Test-Case 'Themes: four palettes with complete, valid colours' {
     Assert-Equal 'Midnight' (Resolve-GhlThemeName -Name '') 'empty names fall back to Midnight'
 }
 
-Test-Case 'Config migrates to version 2 and normalises appearance' {
+Test-Case 'Config migrates to version 3 and normalises appearance' {
     $dir = Join-Path $Global:GHL_TestTemp 'cfg-v1'
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $old = [ordered]@{ Version = 1; BaseDir = $dir; Theme = 'nonsense'; AnimateBackground = 'false' }
@@ -318,10 +354,11 @@ Test-Case 'Config migrates to version 2 and normalises appearance' {
     $env:GHL_CONFIG_DIR = $dir
     try { $cfg = Get-GhlConfig } finally { $env:GHL_CONFIG_DIR = $saved }
 
-    Assert-Equal 2 $cfg.Version 'an old config is migrated to version 2'
+    Assert-Equal 3 $cfg.Version 'an old config is migrated to version 3'
     Assert-Equal 'Midnight' $cfg.Theme 'an unknown theme becomes Midnight'
     Assert-True (-not $cfg.AnimateBackground) 'the string "false" must not become true'
     Assert-True ($cfg.Contains('AnimateBackground')) 'new defaults are merged in'
+    Assert-Equal 0 @($cfg.FavoriteRepos).Count 'favourite repositories default to an empty list'
 }
 
 Test-Case 'Marker write/read + repo state' {

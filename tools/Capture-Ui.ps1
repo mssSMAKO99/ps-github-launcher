@@ -15,6 +15,7 @@ param(
     [switch]$Settings,
     [string]$SettingsTab = 'General',
     [string]$Theme = '',
+    [string]$Favorite = '',
     [string]$Background = ''
 )
 
@@ -44,6 +45,7 @@ $Global:GhlShotBackground = [string]$Background
 $Global:GhlShotSettings = [bool]$Settings
 $Global:GhlShotSettingsTab = [string]$SettingsTab
 $Global:GhlShotTheme = [string]$Theme
+$Global:GhlShotFavorite = [string]$Favorite
 $Global:GhlShotBase = Join-Path $env:TEMP ('ghl-shot-downloads-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 
 $automation = {
@@ -181,6 +183,12 @@ $configBackup = $null
 if (Test-Path -LiteralPath $configPath) { $configBackup = [IO.File]::ReadAllText($configPath) }
 
 try {
+    if ($Global:GhlShotFavorite) {
+        # seed the throwaway config so the star and the filter have something to show
+        $seed = Get-GhlDefaultConfig
+        $seed.FavoriteRepos = @([string]$Global:GhlShotFavorite)
+        [void](Save-GhlConfig -Config $seed)
+    }
     Start-GitHubLauncher -AutomationScript $automation
 } finally {
     try { Remove-Item -LiteralPath $env:GHL_CONFIG_DIR -Recurse -Force -ErrorAction SilentlyContinue } catch { }
