@@ -47,6 +47,16 @@ public class GhlRepoRow : INotifyPropertyChanged
             if (_status != value) { _status = value; Raise("Status"); }
         }
     }
+
+    private bool _isFavorite;
+    public bool IsFavorite
+    {
+        get { return _isFavorite; }
+        set
+        {
+            if (_isFavorite != value) { _isFavorite = value; Raise("IsFavorite"); }
+        }
+    }
 }
 
 public class GhlAssetItem
@@ -132,6 +142,7 @@ function Get-GhlUiMap {
         'rbTabGeneral', 'rbTabAppearance', 'rbTabAdvanced',
         'pnlTabGeneral', 'pnlTabAppearance', 'pnlTabAdvanced',
         'txtFilter', 'txtFilterPlaceholder', 'spinner', 'btnRefresh', 'txtCount',
+        'tglFavOnly', 'btnFavRepo', 'lstFavRepos', 'txtFavReposEmpty', 'btnRemoveFavRepo',
         'dgRepos', 'pnlEmpty', 'txtEmptyTitle', 'txtEmptyHint',
         'txtRepoName', 'txtRepoDesc', 'txtRepoMeta', 'pnlRepoChips',
         'cbRelease', 'btnReleaseRefresh', 'txtInstalled',
@@ -315,12 +326,17 @@ function Update-GhlRepoView {
     if ($text) { $tokens = @($text.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) }
     $state.FilterTokens = $tokens
 
+    $favOnly = $false
+    if ($ui.tglFavOnly -and $ui.tglFavOnly.IsChecked) { $favOnly = $true }
+    $state.FavoritesOnly = $favOnly
+
     # Filter the default ICollectionView instead of rebuilding the collection:
     # sorting, the current row and the scroll position survive every keystroke.
     $view = [Windows.Data.CollectionViewSource]::GetDefaultView($state.Repos)
     $view.Filter = [Predicate[object]]{
         param($row)
         if ($null -eq $row) { return $false }
+        if ($Global:GhlState.FavoritesOnly -and -not $row.IsFavorite) { return $false }
         $list = $Global:GhlState.FilterTokens
         if (-not $list -or $list.Count -eq 0) { return $true }
         $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
@@ -334,13 +350,16 @@ function Update-GhlRepoView {
     $total = $state.AllRepos.Count
     $shown = 0
     foreach ($row in $state.AllRepos) {
-        if ($tokens.Count -eq 0) { $shown++; continue }
-        $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
-        $match = $true
-        foreach ($t in $tokens) {
-            if ($hay.IndexOf($t, [StringComparison]::Ordinal) -lt 0) { $match = $false; break }
+        if ($favOnly -and -not $row.IsFavorite) { continue }
+        if ($tokens.Count -gt 0) {
+            $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
+            $match = $true
+            foreach ($t in $tokens) {
+                if ($hay.IndexOf($t, [StringComparison]::Ordinal) -lt 0) { $match = $false; break }
+            }
+            if (-not $match) { continue }
         }
-        if ($match) { $shown++ }
+        $shown++
     }
 
     if ($total -eq 0) {
@@ -353,7 +372,10 @@ function Update-GhlRepoView {
 
     $emptyVisible = if ($shown -eq 0) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
     $ui.pnlEmpty.Visibility = $emptyVisible
-    if ($total -gt 0 -and $shown -eq 0) {
+    if ($total -gt 0 -and $shown -eq 0 -and $favOnly) {
+        $ui.txtEmptyTitle.Text = 'No favourite repositories'
+        $ui.txtEmptyHint.Text = 'Star a repository with the button next to its name'
+    } elseif ($total -gt 0 -and $shown -eq 0) {
         $ui.txtEmptyTitle.Text = 'Nothing matches the filter'
         $ui.txtEmptyHint.Text = 'Try a different keyword'
     } elseif ($state.LastErrorText) {
@@ -371,8 +393,8 @@ function Set-GhlRepoRows {
     $state = $Global:GhlState
     $ui = $state.UI
 
-    $state.SuppressSelection = $true
     $all = New-Object System.Collections.Generic.List[GhlRepoRow]
+    $state.SuppressSelection = $true
     try {
         $state.Repos.Clear()
         $state.AllRepos = @()
@@ -396,6 +418,7 @@ function Set-GhlRepoRows {
             } else {
                 Get-GhlRepoBadge -BaseDir $state.Config.BaseDir -User $row.Owner -Repo $row.Name
             }
+            $row.IsFavorite = (Test-GhlFavoriteRepo -Config $state.Config -Repo $row.FullName)
             [void]$state.Repos.Add($row)
             $all.Add($row)
         }
@@ -503,6 +526,7 @@ function Reset-GhlDetails {
     $ui.txtInstalled.Text = 'Not installed'
     $ui.txtBatchHint.Visibility = [Windows.Visibility]::Collapsed
     $ui.txtRepoName.Text = 'No repository selected'
+    $ui.btnFavRepo.Visibility = [Windows.Visibility]::Collapsed
     $ui.txtRepoDesc.Text = ''
     $ui.txtRepoMeta.Text = ''
     if ($ui.ContainsKey('pnlRepoChips') -and $ui.pnlRepoChips) { $ui.pnlRepoChips.Children.Clear() }
@@ -522,6 +546,7 @@ function Show-GhlRepoDetails {
     }
 
     $state.SelectedRow = $Row
+    Update-GhlFavRepoButton
     $ui.txtRepoName.Text = $Row.Name
     $ui.txtRepoDesc.Text = if ($Row.Description) { $Row.Description } else { 'No description.' }
     $meta = '{0}  |  {1} stars  |  {2} forks  |  updated {3}' -f $Row.Language, $Row.Stars, $Row.Forks, $Row.UpdatedText
@@ -1548,6 +1573,7 @@ function Save-GhlUiConfig {
         $cfg.DimmingOpacity = [Math]::Round($ui.sldDim.Value / 100.0, 3)
         $cfg.Theme = Resolve-GhlThemeName -Name ([string]$ui.cbTheme.SelectedItem)
         $cfg.AnimateBackground = [bool]$ui.chkAnimateBg.IsChecked
+        $cfg.FavoriteRepos = @(Get-GhlFavoriteRepos -Config $cfg)
         $cfg.DownloadMode = if ($ui.rbModeSource.IsChecked) { 'Source' } else { 'Release' }
         $cfg.RunAfterDownload = [bool]$ui.chkRunAfter.IsChecked
         $cfg.IncludePrerelease = [bool]$ui.chkPrerelease.IsChecked
@@ -1665,6 +1691,7 @@ function Initialize-GhlUiFromConfig {
     $ui.chkDebugLog.IsChecked = [bool]$cfg.DebugLog
     $ui.txtAbout.Text = Get-GhlAboutText
     Update-GhlFavoritesUi
+    Update-GhlFavoriteReposUi
     Update-GhlBaseDirHint
 
     if ($cfg.BackgroundPath) {
@@ -1980,6 +2007,67 @@ function Update-GhlBaseDirHint {
     $ui.txtBaseDirHint.Text = "Saving to: $($state.Config.BaseDir)"
 }
 
+function Update-GhlFavRepoButton {
+    <# Reflects the selected repository's favourite state. #>
+    $state = $Global:GhlState
+    $ui = $state.UI
+    $row = $state.SelectedRow
+    if (-not $ui.btnFavRepo) { return }
+
+    if (-not $row) {
+        $ui.btnFavRepo.Visibility = [Windows.Visibility]::Collapsed
+        return
+    }
+
+    $fav = Test-GhlFavoriteRepo -Config $state.Config -Repo $row.FullName
+    $ui.btnFavRepo.Visibility = [Windows.Visibility]::Visible
+    $ui.btnFavRepo.Content = if ($fav) { [string][char]0xE734 } else { [string][char]0xE735 }
+    $ui.btnFavRepo.ToolTip = if ($fav) {
+        'Remove this repository from favourites'
+    } else {
+        'Add this repository to favourites'
+    }
+}
+
+function Update-GhlFavoriteReposUi {
+    <# Repaints the stars, the settings chips and the toggle button. #>
+    $state = $Global:GhlState
+    $ui = $state.UI
+
+    $repos = @(Get-GhlFavoriteRepos -Config $state.Config)
+    $state.Config.FavoriteRepos = $repos
+
+    if ($ui.lstFavRepos) {
+        $ui.lstFavRepos.ItemsSource = $repos
+        $ui.txtFavReposEmpty.Visibility =
+        if ($repos.Count -eq 0) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+        $ui.btnRemoveFavRepo.IsEnabled = ($null -ne $ui.lstFavRepos.SelectedItem)
+    }
+
+    foreach ($row in @($state.AllRepos)) {
+        if ($row) { $row.IsFavorite = (Test-GhlFavoriteRepo -Config $state.Config -Repo $row.FullName) }
+    }
+
+    Update-GhlFavRepoButton
+    if ($ui.tglFavOnly -and $ui.tglFavOnly.IsChecked) { Update-GhlRepoView }
+}
+
+function Set-GhlFavoriteRepo {
+    param([Parameter(Mandatory)][string]$Repo, [bool]$Favorite)
+
+    $state = $Global:GhlState
+    if ($Favorite) {
+        $state.Config.FavoriteRepos = @(Add-GhlFavoriteRepo -Config $state.Config -Repo $Repo)
+    } else {
+        $state.Config.FavoriteRepos = @(Remove-GhlFavoriteRepo -Config $state.Config -Repo $Repo)
+    }
+
+    # the change is small and deliberate: persist it right away so a crash cannot
+    # lose a star the user just clicked
+    [void](Save-GhlConfig -Config $state.Config)
+    Update-GhlFavoriteReposUi
+}
+
 function New-GhlChip {
     <# A small rounded label. Brushes are resolved dynamically so the chip
        follows a theme change without being rebuilt. #>
@@ -2195,6 +2283,43 @@ function Connect-GhlEvents {
             $st.Config.FavoriteUsers = Remove-GhlFavoriteUser -Config $st.Config -User $picked
             Update-GhlFavoritesUi
             [void](Save-GhlConfig -Config $st.Config)
+        })
+
+    # --- favourite repositories -------------------------------------------
+    $ui.btnFavRepo.Add_Click({
+            param($s, $e)
+            $st = $Global:GhlState
+            $row = $st.SelectedRow
+            if (-not $row) { return }
+
+            $fav = Test-GhlFavoriteRepo -Config $st.Config -Repo $row.FullName
+            Set-GhlFavoriteRepo -Repo $row.FullName -Favorite (-not $fav)
+            if ($fav) {
+                Show-GhlToast -Message "Removed $($row.FullName) from favourites." -Kind 'info' -Ms 2000
+            } else {
+                Show-GhlToast -Message "Pinned $($row.FullName)." -Kind 'success' -Ms 2000
+            }
+        })
+
+    $ui.tglFavOnly.Add_Checked({ param($s, $e) Update-GhlRepoView })
+    $ui.tglFavOnly.Add_Unchecked({ param($s, $e) Update-GhlRepoView })
+
+    $ui.lstFavRepos.Add_SelectionChanged({
+            param($s, $e)
+            $st = $Global:GhlState
+            $st.UI.btnRemoveFavRepo.IsEnabled = ($null -ne $st.UI.lstFavRepos.SelectedItem)
+        })
+
+    $ui.btnRemoveFavRepo.Add_Click({
+            param($s, $e)
+            $st = $Global:GhlState
+            $picked = [string]$st.UI.lstFavRepos.SelectedItem
+            if (-not $picked) {
+                Show-GhlToast -Message 'Select a favourite repository first.' -Kind 'warn'
+                return
+            }
+            Set-GhlFavoriteRepo -Repo $picked -Favorite $false
+            Show-GhlToast -Message "Removed $picked from favourites." -Kind 'info' -Ms 2000
         })
 
     $ui.cbUser.Add_LostFocus({
@@ -2671,6 +2796,7 @@ function Start-GitHubLauncher {
         RestoreBounds   = $null
         FilterTimer     = $null
         FilterTokens    = @()
+        FavoritesOnly   = $false
         ToastTimer      = $null
         Brushes         = $brushes
         Theme           = 'Midnight'

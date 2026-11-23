@@ -5,7 +5,7 @@
 
 function Get-GhlDefaultConfig {
     return [ordered]@{
-        Version         = 2
+        Version         = 3
         BaseDir         = (Join-Path $env:USERPROFILE 'GitHub Downloads')
         BackgroundPath  = ''
         BackgroundKind  = 'file'          # file | url
@@ -16,6 +16,7 @@ function Get-GhlDefaultConfig {
         PatPlain        = ''              # only used when DPAPI is unavailable
         LastUser        = ''
         FavoriteUsers   = @()             # pinned GitHub logins
+        FavoriteRepos   = @()             # pinned owner/repo names
         DownloadMode    = 'Release'       # Release | Source
         RunAfterDownload = $false         # opt-in: never launch by default
         IncludePrerelease = $false
@@ -82,6 +83,70 @@ function Test-GhlFavoriteUser {
     if (-not $User) { return $false }
     $name = $User.Trim().TrimStart('@')
     foreach ($f in @(Get-GhlFavoriteUsers -Config $Config)) {
+        if ($f.Equals($name, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-GhlFavoriteRepos {
+    <#
+        Returns normalised owner/repo entries: trimmed, slash-trimmed,
+        de-duplicated case-insensitively, capped at 30.
+
+        A single-element array comes back from JSON as a plain string, so the
+        value is always wrapped in @() and stringified element by element.
+    #>
+    param([Parameter(Mandatory)]$Config)
+
+    $list = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($item in @($Config.FavoriteRepos)) {
+        if ($null -eq $item) { continue }
+        $name = ([string]$item).Trim().Trim('/').Trim()
+        if (-not $name -or $name.Length -gt 200) { continue }
+        # GitHub logins are alphanumeric/hyphen; repository names also allow . and _
+        if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9\-]*/[A-Za-z0-9._\-]+$') { continue }
+        if ($seen.Add($name)) { [void]$list.Add($name) }
+        if ($list.Count -ge 30) { break }
+    }
+
+    return $list.ToArray()
+}
+
+function Add-GhlFavoriteRepo {
+    <# Adds (or moves to front) owner/repo. Returns the new array. #>
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Repo)
+
+    $name = $Repo.Trim().Trim('/').Trim()
+    if (-not $name) { return Get-GhlFavoriteRepos -Config $Config }
+
+    $list = New-Object System.Collections.Generic.List[string]
+    [void]$list.Add($name)
+    foreach ($existing in @(Get-GhlFavoriteRepos -Config $Config)) {
+        if (-not $existing.Equals($name, [StringComparison]::OrdinalIgnoreCase)) { [void]$list.Add($existing) }
+    }
+
+    $result = @($list.ToArray())
+    if ($result.Count -gt 30) { $result = @($result[0..29]) }
+    return $result
+}
+
+function Remove-GhlFavoriteRepo {
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$Repo)
+
+    $kept = @(Get-GhlFavoriteRepos -Config $Config | Where-Object {
+            -not $_.Equals($Repo.Trim(), [StringComparison]::OrdinalIgnoreCase)
+        })
+    return $kept
+}
+
+function Test-GhlFavoriteRepo {
+    param([Parameter(Mandatory)]$Config, [string]$Repo)
+
+    if (-not $Repo) { return $false }
+    $name = $Repo.Trim()
+    foreach ($f in @(Get-GhlFavoriteRepos -Config $Config)) {
         if ($f.Equals($name, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
@@ -202,10 +267,12 @@ function Get-GhlConfig {
     $cfg.AnimateBackground = [bool]$animate
 
     $configVersion = 0
-    if ([int]::TryParse([string]$cfg.Version, [ref]$configVersion) -and $configVersion -lt 2) {
-        $cfg.Version = 2
-        Write-GhlLog 'config.json migrated to version 2 (theme and GIF animation).' Debug
+    if ([int]::TryParse([string]$cfg.Version, [ref]$configVersion) -and $configVersion -lt 3) {
+        $cfg.Version = 3
+        Write-GhlLog 'config.json migrated to version 3 (favourite repositories).' Debug
     }
+
+    $cfg.FavoriteRepos = @(Get-GhlFavoriteRepos -Config $cfg)
 
     $Global:GHL_DebugLog = [bool]($cfg.DebugLog -or $env:GHL_DEBUG)
     return $cfg

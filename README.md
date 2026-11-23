@@ -29,7 +29,7 @@ The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one
 | Area | What you get |
 | --- | --- |
 | Search | Username + Enter. Fetches up to 500 public repositories (`sort=updated`). |
-| Favourites | Pin logins with the star button. The editable combo box offers them next time; managed in Settings. Stored case-insensitively, max 15. |
+| Favourites | Pin authors (star next to the username, max 15) and repositories (star in the details panel, max 30). Both lists are case-insensitive, managed in Settings, and a "Favourites" chip filters the repository list down to the pinned ones. |
 | Auth | Optional PAT (fine-grained or classic). Stored with DPAPI (`ConvertFrom-SecureString`), never in plaintext unless DPAPI is unavailable. |
 | Filter | Client-side, 250 ms debounce, matches name / description / language, token-based (`rust cli`). |
 | Releases | Every published version (up to 30) in a picker, newest stable selected by default. Drafts are hidden; pre-releases appear when the checkbox is on. The panel shows what is already installed and whether the selected version is newer. |
@@ -248,8 +248,8 @@ What they cover:
 
 | Suite | Coverage |
 | --- | --- |
-| `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), theme palettes and config migration, mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
-| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, theme switch + animated GIF + settings tabs + metadata chips + focus ring, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
+| `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (authors and repositories, incl. the single-element JSON trap), theme palettes and config migration, mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
+| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, theme switch + animated GIF + settings tabs + metadata chips + focus ring + star/filter/settings favourites, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
 | `Run-UiRepeat.ps1` | the window opens twice in one PowerShell session, runs via `-File`, and refuses to start in an MTA host |
 | `Ui-Integration.ps1` | the same flow against api.github.com |
 
@@ -265,7 +265,7 @@ Visual checks:
 ```powershell
 # renders the window against the mock API and saves a PNG
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tools\Capture-Ui.ps1 -Out shot.png `
-    -Theme Light -Settings -SettingsTab Appearance -Background C:\path\to\wallpaper.gif
+    -Theme Light -Settings -SettingsTab Appearance -Favorite mockuser/demo-tool
 ```
 
 Smoke test that the real window boots and shuts down cleanly:
@@ -340,7 +340,7 @@ or cancelled download can never be mistaken for a complete one.
 
 ```json
 {
-  "Version": 2,
+  "Version": 3,
   "BaseDir": "C:\\Users\\you\\GitHub Downloads",
   "BackgroundPath": "",
   "BackgroundKind": "file",
@@ -351,6 +351,7 @@ or cancelled download can never be mistaken for a complete one.
   "PatPlain": "",
   "LastUser": "ChrisTitusTech",
   "FavoriteUsers": ["ChrisTitusTech", "microsoft"],
+  "FavoriteRepos": ["ChrisTitusTech/winutil", "microsoft/vscode"],
   "DownloadMode": "Release",
   "RunAfterDownload": false,
   "IncludePrerelease": false,
@@ -367,11 +368,15 @@ or cancelled download can never be mistaken for a complete one.
 * `FavoriteUsers` is normalised on every read: trimmed, `@` stripped, de-duplicated
   case-insensitively, capped at 15. A one-element array comes back from JSON as a plain string, so
   readers always wrap it in `@()`.
+* `FavoriteRepos` works the same way with `owner/repo` entries: slashes trimmed, only a valid
+  login/name pair kept, de-duplicated case-insensitively, capped at 30. Starring a repository saves
+  the config immediately.
 * Set `GHL_CONFIG_DIR` to point the whole app at a different settings folder (used by the tests so
   they never touch your real config).
 * `Theme` is one of `Midnight`, `Graphite`, `Ocean`, `Light`; an unknown value falls back to
   `Midnight`. `AnimateBackground: false` keeps GIF backgrounds on their first frame.
-* Version 1 configs migrate to version 2 on load: the new appearance keys get their defaults.
+* Version 1 configs migrate on load; the appearance keys were added in version 2 and
+  `FavoriteRepos` in version 3.
 
 Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB); with `GHL_CONFIG_DIR`
 set, they go to `$env:GHL_CONFIG_DIR\logs` together with the config.

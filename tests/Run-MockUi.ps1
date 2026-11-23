@@ -506,6 +506,48 @@ $automation = {
                         $ui.rbTabGeneral.IsChecked = $true
                         Show-GhlSettings -Show $false
                         $script:UxOk = 'tabs+chips+focus'
+                        $script:Stage = 'fav'
+                    }
+
+                    'fav' {
+                        $row = $st.SelectedRow
+                        if (-not $row) { throw 'no repository is selected for the favourite test' }
+                        if ($ui.btnFavRepo.Visibility -ne [Windows.Visibility]::Visible) {
+                            throw 'the favourite button is hidden for a selected repository'
+                        }
+
+                        $ui.btnFavRepo.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                        if (-not $row.IsFavorite) { throw 'clicking the star did not mark the row as favourite' }
+                        if (-not (Test-GhlFavoriteRepo -Config $st.Config -Repo $row.FullName)) {
+                            throw "the config does not contain $($row.FullName)"
+                        }
+
+                        $ui.tglFavOnly.IsChecked = $true
+                        if ($ui.dgRepos.Items.Count -ne 1) {
+                            throw "the favourites filter shows $($ui.dgRepos.Items.Count) rows instead of 1"
+                        }
+
+                        Show-GhlSettings -Show $true
+                        Select-GhlSettingsTab -Name 'General'
+                        if (@($ui.lstFavRepos.ItemsSource).Count -ne 1) {
+                            throw "settings list the repository $(@($ui.lstFavRepos.ItemsSource).Count) times"
+                        }
+                        $ui.lstFavRepos.SelectedIndex = 0
+                        if (-not $ui.btnRemoveFavRepo.IsEnabled) { throw 'Remove selected is not enabled' }
+                        $ui.btnRemoveFavRepo.RaiseEvent((New-Object Windows.RoutedEventArgs([Windows.Controls.Button]::ClickEvent)))
+                        if ($row.IsFavorite) { throw 'removing the favourite did not clear the star' }
+                        if (Test-GhlFavoriteRepo -Config $st.Config -Repo $row.FullName) {
+                            throw 'the repository is still listed as a favourite'
+                        }
+                        if ($ui.dgRepos.Items.Count -ne 0) {
+                            throw "the favourites filter still shows $($ui.dgRepos.Items.Count) rows"
+                        }
+
+                        $ui.tglFavOnly.IsChecked = $false
+                        Show-GhlSettings -Show $false
+                        if ($ui.dgRepos.Items.Count -lt 5) { throw 'turning the filter off did not restore the list' }
+
+                        $script:FavOk = 'star+filter+settings'
                         $script:Stage = 'done'
                     }
                 }
@@ -520,7 +562,7 @@ $automation = {
 
                 if ($script:Stage -eq 'done') {
                     $s.Stop()
-                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ntheme=$($script:ThemeAfter)`ntext=$($script:ThemeText)`ngifframes=$($script:GifFrames)`ngifshown=$($script:GifShown)`ngifstopped=$($script:GifStopped)`nux=$($script:UxOk)`ndir=$($script:DestDir)")
+                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ntheme=$($script:ThemeAfter)`ntext=$($script:ThemeText)`ngifframes=$($script:GifFrames)`ngifshown=$($script:GifShown)`ngifstopped=$($script:GifStopped)`nux=$($script:UxOk)`nfav=$($script:FavOk)`ndir=$($script:DestDir)")
                     $ui.Window.Close()
                 }
             } catch {
