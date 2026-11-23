@@ -62,6 +62,14 @@ public class GhlAssetItem
     public override string ToString() { return Name; }
 }
 
+public class GhlReleaseItem
+{
+    public string Tag { get; set; }
+    public string Label { get; set; }
+    public bool Prerelease { get; set; }
+    public override string ToString() { return Label; }
+}
+
 public class GhlCandidate
 {
     public string Name { get; set; }
@@ -117,8 +125,9 @@ function Get-GhlUiMap {
         'txtFilter', 'txtFilterPlaceholder', 'spinner', 'btnRefresh', 'txtCount',
         'dgRepos', 'pnlEmpty', 'txtEmptyTitle', 'txtEmptyHint',
         'txtRepoName', 'txtRepoDesc', 'txtRepoMeta',
+        'cbRelease', 'btnReleaseRefresh', 'txtInstalled',
         'rbModeRelease', 'rbModeSource', 'txtAssetsCaption', 'lstAssets',
-        'btnDownload', 'btnOpenFolder', 'btnRepoPage',
+        'btnDownload', 'btnOpenFolder', 'btnRepoPage', 'txtBatchHint',
         'prgDownload', 'txtStatus', 'txtSpeed', 'btnCancel', 'btnOpenLast',
         'toast', 'txtToast', 'imgBackground', 'rectDim',
         'rsN', 'rsS', 'rsW', 'rsE', 'rsNW', 'rsNE', 'rsSW', 'rsSE'
@@ -222,6 +231,18 @@ function Show-GhlToast {
     $ui.toast.Opacity = 1
     Write-GhlLog "TOAST [$Kind] $Message" Debug
 
+    # a previous fade-out ends with FillBehavior=HoldEnd, which keeps the
+    # property pinned at 0; without clearing it the next toast stays invisible
+    try { $ui.toast.BeginAnimation([Windows.UIElement]::OpacityProperty, $null) } catch { }
+    $ui.toast.Opacity = 0
+    try {
+        $fadeIn = New-Object Windows.Media.Animation.DoubleAnimation -ArgumentList @(
+            0.0, 1.0, (New-Object Windows.Duration -ArgumentList ([TimeSpan]::FromMilliseconds(140))))
+        $ui.toast.BeginAnimation([Windows.UIElement]::OpacityProperty, $fadeIn)
+    } catch {
+        $ui.toast.Opacity = 1
+    }
+
     Stop-GhlToastTimer
     $timer = New-Object Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds($Ms)
@@ -253,8 +274,11 @@ function Set-GhlBusy {
         $ui.spinner.Visibility = [Windows.Visibility]::Collapsed
     }
 
-    $ui.btnSearch.IsEnabled = -not $Busy
-    $ui.btnRefresh.IsEnabled = -not $Busy
+    # searching is allowed while a repo/release request is in flight (the newer
+    # request wins), but never while a download owns the progress UI
+    $blockSearch = $Busy -and $state.BusyKind -eq 'Download'
+    $ui.btnSearch.IsEnabled = -not $blockSearch
+    $ui.btnRefresh.IsEnabled = -not $blockSearch
     Update-GhlActionState
 }
 
@@ -274,42 +298,42 @@ function Update-GhlRepoView {
     $state = $Global:GhlState
     $ui = $state.UI
 
-    $selected = $null
-    if ($ui.dgRepos.SelectedItem) { $selected = $ui.dgRepos.SelectedItem.FullName }
-
     $text = ''
     if ($ui.txtFilter.Text) { $text = $ui.txtFilter.Text.Trim().ToLowerInvariant() }
     $ui.txtFilterPlaceholder.Visibility = if ($text) { [Windows.Visibility]::Collapsed } else { [Windows.Visibility]::Visible }
 
     $tokens = @()
     if ($text) { $tokens = @($text.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) }
+    $state.FilterTokens = $tokens
 
-    $state.SuppressSelection = $true
-    try {
-        $state.Repos.Clear()
-        foreach ($row in $state.AllRepos) {
-            if ($tokens.Count -gt 0) {
-                $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
-                $match = $true
-                foreach ($t in $tokens) {
-                    if ($hay.IndexOf($t, [StringComparison]::Ordinal) -lt 0) { $match = $false; break }
-                }
-                if (-not $match) { continue }
-            }
-            [void]$state.Repos.Add($row)
+    # Filter the default ICollectionView instead of rebuilding the collection:
+    # sorting, the current row and the scroll position survive every keystroke.
+    $view = [Windows.Data.CollectionViewSource]::GetDefaultView($state.Repos)
+    $view.Filter = [Predicate[object]]{
+        param($row)
+        if ($null -eq $row) { return $false }
+        $list = $Global:GhlState.FilterTokens
+        if (-not $list -or $list.Count -eq 0) { return $true }
+        $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
+        foreach ($t in $list) {
+            if ($hay.IndexOf($t, [StringComparison]::Ordinal) -lt 0) { return $false }
         }
-
-        if ($selected) {
-            foreach ($r in $state.Repos) {
-                if ($r.FullName -eq $selected) { $ui.dgRepos.SelectedItem = $r; break }
-            }
-        }
-    } finally {
-        $state.SuppressSelection = $false
+        return $true
     }
+    $view.Refresh()
 
     $total = $state.AllRepos.Count
-    $shown = $state.Repos.Count
+    $shown = 0
+    foreach ($row in $state.AllRepos) {
+        if ($tokens.Count -eq 0) { $shown++; continue }
+        $hay = ('{0} {1} {2} {3}' -f $row.Name, $row.Owner, $row.Description, $row.Language).ToLowerInvariant()
+        $match = $true
+        foreach ($t in $tokens) {
+            if ($hay.IndexOf($t, [StringComparison]::Ordinal) -lt 0) { $match = $false; break }
+        }
+        if ($match) { $shown++ }
+    }
+
     if ($total -eq 0) {
         $ui.txtCount.Text = '-'
     } elseif ($shown -eq $total) {
@@ -336,28 +360,43 @@ function Set-GhlRepoRows {
     param($Data, [string]$User)
 
     $state = $Global:GhlState
-    $list = New-Object System.Collections.Generic.List[GhlRepoRow]
+    $ui = $state.UI
 
-    foreach ($r in @($Data)) {
-        if ($null -eq $r) { continue }
-        $row = New-Object GhlRepoRow
-        $row.Name = [string]$r.Name
-        $row.Owner = [string]$r.Owner
-        $row.FullName = [string]$r.FullName
-        $row.Description = [string]$r.Description
-        $row.Language = if ($r.Language) { [string]$r.Language } else { '-' }
-        $row.Stars = [int]$r.Stars
-        $row.Forks = [int]$r.Forks
-        $row.Updated = if ($r.Updated) { [DateTime]$r.Updated } else { [DateTime]::MinValue }
-        $row.UpdatedText = Format-GhlRelativeDate $r.Updated
-        $row.Url = [string]$r.HtmlUrl
-        $row.DefaultBranch = [string]$r.DefaultBranch
-        $row.Status = Get-GhlRepoBadge -BaseDir $state.Config.BaseDir -User $row.Owner -Repo $row.Name
-        $list.Add($row)
+    $state.SuppressSelection = $true
+    $all = New-Object System.Collections.Generic.List[GhlRepoRow]
+    try {
+        $state.Repos.Clear()
+        $state.AllRepos = @()
+
+        foreach ($r in @($Data)) {
+            if ($null -eq $r) { continue }
+            $row = New-Object GhlRepoRow
+            $row.Name = [string]$r.Name
+            $row.Owner = [string]$r.Owner
+            $row.FullName = [string]$r.FullName
+            $row.Description = [string]$r.Description
+            $row.Language = if ($r.Language) { [string]$r.Language } else { '-' }
+            $row.Stars = [int]$r.Stars
+            $row.Forks = [int]$r.Forks
+            $row.Updated = if ($r.Updated) { [DateTime]$r.Updated } else { [DateTime]::MinValue }
+            $row.UpdatedText = Format-GhlRelativeDate $r.Updated
+            $row.Url = [string]$r.HtmlUrl
+            $row.DefaultBranch = [string]$r.DefaultBranch
+            $row.Status = if ($r.PSObject.Properties['Badge'] -and $r.Badge) {
+                [string]$r.Badge
+            } else {
+                Get-GhlRepoBadge -BaseDir $state.Config.BaseDir -User $row.Owner -Repo $row.Name
+            }
+            [void]$state.Repos.Add($row)
+            $all.Add($row)
+        }
+    } finally {
+        $state.SuppressSelection = $false
     }
 
-    $state.AllRepos = $list.ToArray()
+    $state.AllRepos = $all.ToArray()
     $state.ReleaseCache = @{}
+    $ui.dgRepos.SelectedItem = $null
     Update-GhlRepoView
 }
 
@@ -396,12 +435,23 @@ function Update-GhlActionState {
     try { $selectedCount = [int]$ui.dgRepos.SelectedItems.Count } catch { }
 
     if ($selectedCount -gt 1) {
-        # batch mode resolves each repository's best asset in the worker,
-        # so the panel's selection is irrelevant here
+        # batch mode resolves each repository's release in the worker; the
+        # version comes from the details panel, which still shows the current row
         $ui.btnDownload.IsEnabled = (-not $busy)
     } else {
         $ui.btnDownload.IsEnabled = ($hasRow -and -not $busy -and $state.Mode -eq 'Source') -or
-                                    ($hasRow -and -not $busy -and $state.Mode -eq 'Release' -and $null -ne $ui.lstAssets.SelectedItem -and $ui.lstAssets.SelectedItem.Compatible)
+                                    ($hasRow -and -not $busy -and $state.Mode -eq 'Release' -and $null -ne $state.SelectedRelease -and $null -ne $ui.lstAssets.SelectedItem -and $ui.lstAssets.SelectedItem.Compatible)
+    }
+
+    $ui.txtBatchHint.Visibility = if ($selectedCount -gt 1) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+    if ($selectedCount -gt 1) {
+        if ($state.Mode -eq 'Source') {
+            $ui.txtBatchHint.Text = 'Source archive for every selected repository'
+        } elseif ($state.SelectedRelease) {
+            $ui.txtBatchHint.Text = 'Version {0} for all selected repositories' -f $state.SelectedRelease.Tag
+        } else {
+            $ui.txtBatchHint.Text = 'Latest stable version for all selected repositories'
+        }
     }
 
     $canOpen = $false
@@ -412,14 +462,15 @@ function Update-GhlActionState {
     $ui.btnOpenFolder.IsEnabled = ($canOpen -and -not $busy)
     $ui.btnRepoPage.IsEnabled = ($hasRow -and -not $busy)
 
-    $ui.rbModeRelease.IsEnabled = ($hasRow -and -not $busy -and $null -ne $state.CurrentRelease)
+    $ui.rbModeRelease.IsEnabled = ($hasRow -and -not $busy -and $null -ne $state.SelectedRelease)
     $ui.rbModeSource.IsEnabled = ($hasRow -and -not $busy)
 
     if ($selectedCount -gt 1) {
         $ui.btnDownload.Content = "Download $selectedCount selected"
     } elseif ($hasRow) {
         $label = if ($ui.chkRunAfter.IsChecked) { 'Download & run' } else { 'Download' }
-        if ($state.Mode -eq 'Release' -and $null -eq $ui.lstAssets.SelectedItem) { $label = 'Select an asset' }
+        if ($state.Mode -eq 'Release' -and $null -eq $state.SelectedRelease) { $label = 'Select a version' }
+        elseif ($state.Mode -eq 'Release' -and $null -eq $ui.lstAssets.SelectedItem) { $label = 'Select an asset' }
         $ui.btnDownload.Content = $label
     } else {
         $ui.btnDownload.Content = 'Download'
@@ -434,12 +485,18 @@ function Reset-GhlDetails {
     $ui = $state.UI
     $state.SelectedRow = $null
     $state.CurrentRelease = $null
+    $state.SelectedRelease = $null
+    $state.Releases = @()
     $state.ReleaseFor = ''
+    $state.SourceForced = $false
     $state.Assets.Clear()
+    $ui.cbRelease.ItemsSource = @()
+    $ui.txtInstalled.Text = 'Not installed'
+    $ui.txtBatchHint.Visibility = [Windows.Visibility]::Collapsed
     $ui.txtRepoName.Text = 'No repository selected'
     $ui.txtRepoDesc.Text = ''
     $ui.txtRepoMeta.Text = ''
-    $ui.txtAssetsCaption.Text = 'Assets'
+    $ui.txtAssetsCaption.Text = 'Files'
     Update-GhlActionState
 }
 
@@ -460,44 +517,164 @@ function Show-GhlRepoDetails {
     $meta = '{0}  |  {1} stars  |  {2} forks  |  updated {3}' -f $Row.Language, $Row.Stars, $Row.Forks, $Row.UpdatedText
     if ($Row.Owner) { $meta = "$($Row.Owner)  |  $meta" }
     $ui.txtRepoMeta.Text = $meta
+    Update-GhlInstalledInfo -Row $Row
 
     $key = $Row.FullName
     if ($state.ReleaseCache.ContainsKey($key)) {
         $entry = $state.ReleaseCache[$key]
-        if (((Get-Date) - $entry.Ts).TotalMinutes -lt 5) {
-            Apply-GhlRelease -Release $entry.Release -Row $Row
+        if (((Get-Date) - $entry.Ts).TotalMinutes -lt 10) {
+            Apply-GhlReleases -Releases $entry.Releases -Row $Row
             return
         }
         $state.ReleaseCache.Remove($key)
     }
 
     $state.CurrentRelease = $null
+    $state.SelectedRelease = $null
+    $state.Releases = @()
     $state.ReleaseFor = ''
-    $ui.txtAssetsCaption.Text = 'Loading release information...'
     $state.Assets.Clear()
+    $ui.cbRelease.ItemsSource = @()
+    $ui.txtAssetsCaption.Text = 'Loading releases...'
     Update-GhlActionState
     Start-GhlReleaseJob -Row $Row
 }
 
-function Apply-GhlRelease {
-    param($Release, $Row)
+function Compare-GhlTagVersion {
+    <# True when $Tag looks newer than $BaseTag (numeric segments are compared). #>
+    param([string]$Tag, [string]$BaseTag)
+
+    $a = @([regex]::Matches([string]$Tag, '\d+') | ForEach-Object { [int]$_.Value })
+    $b = @([regex]::Matches([string]$BaseTag, '\d+') | ForEach-Object { [int]$_.Value })
+    if ($a.Count -eq 0 -or $b.Count -eq 0) { return $false }
+
+    $n = [Math]::Max($a.Count, $b.Count)
+    for ($i = 0; $i -lt $n; $i++) {
+        $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+        $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+        if ($x -gt $y) { return $true }
+        if ($x -lt $y) { return $false }
+    }
+    return $false
+}
+
+function Update-GhlInstalledInfo {
+    <# Shows the marker's version next to the version picker. #>
+    param($Row)
+
+    $state = $Global:GhlState
+    $ui = $state.UI
+    if (-not $ui) { return }
+
+    if (-not $Row) {
+        $ui.txtInstalled.Text = 'Not installed'
+        return
+    }
+
+    $dir = Get-GhlRepoDir -BaseDir $state.Config.BaseDir -User $Row.Owner -Repo $Row.Name
+    $marker = Read-GhlMarker -Directory $dir
+    if (-not $marker) {
+        $ui.txtInstalled.Text = 'Not installed'
+        return
+    }
+
+    $installed = [string]$marker.Tag
+    if (-not $installed) {
+        $ui.txtInstalled.Text = 'Installed (version unknown)'
+        return
+    }
+
+    $selected = if ($state.SelectedRelease) { [string]$state.SelectedRelease.Tag } else { '' }
+    if ($selected -and $selected -ine $installed) {
+        if (Compare-GhlTagVersion -Tag $selected -BaseTag $installed) {
+            $ui.txtInstalled.Text = 'Installed {0} | update available' -f $installed
+        } else {
+            $ui.txtInstalled.Text = 'Installed {0} | selected {1}' -f $installed, $selected
+        }
+    } else {
+        $ui.txtInstalled.Text = 'Installed {0}' -f $installed
+    }
+}
+
+function Apply-GhlReleases {
+    param($Releases, $Row)
 
     $state = $Global:GhlState
     $ui = $state.UI
 
-    $state.CurrentRelease = $Release
+    $previousTag = ''
+    if ($state.SelectedRelease) { $previousTag = [string]$state.SelectedRelease.Tag }
+
+    $state.Releases = @(@($Releases) | Where-Object { $_ -and -not $_.Draft })
     $state.ReleaseFor = if ($Row) { $Row.FullName } else { '' }
 
-    if ($Release) {
-        $ui.txtAssetsCaption.Text = 'Assets | {0}' -f $Release.Tag
-        if (-not $state.Mode) { $state.Mode = 'Release' }
+    $includePre = [bool]$ui.chkPrerelease.IsChecked
+    $visible = @($state.Releases | Where-Object { $includePre -or -not $_.Prerelease })
+
+    $items = New-Object System.Collections.Generic.List[GhlReleaseItem]
+    foreach ($rel in $visible) {
+        $item = New-Object GhlReleaseItem
+        $item.Tag = [string]$rel.Tag
+        $date = ''
+        if ($rel.Published) { $date = ([DateTime]$rel.Published).ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
+        $suffix = if ($rel.Prerelease) { ' (pre)' } else { '' }
+        $item.Label = if ($date) { '{0}  |  {1}{2}' -f $rel.Tag, $date, $suffix } else { '{0}{1}' -f $rel.Tag, $suffix }
+        $item.Prerelease = [bool]$rel.Prerelease
+        $items.Add($item)
+    }
+
+    $state.ReleaseItems = $items.ToArray()
+    $ui.cbRelease.ItemsSource = $state.ReleaseItems
+
+    $picked = $null
+    if ($previousTag) {
+        foreach ($i in $state.ReleaseItems) {
+            if ($i.Tag -ieq $previousTag) { $picked = $i; break }
+        }
+    }
+    if (-not $picked -and $state.ReleaseItems.Count -gt 0) { $picked = $state.ReleaseItems[0] }
+
+    $state.SuppressReleaseChange = $true
+    try { $ui.cbRelease.SelectedItem = $picked } finally { $state.SuppressReleaseChange = $false }
+
+    if ($picked) {
+        $state.SelectedRelease = Select-GhlReleaseByTag -Releases $state.Releases -Tag $picked.Tag
     } else {
-        $ui.txtAssetsCaption.Text = 'No release assets - source only'
-        $state.Mode = 'Source'
-        $ui.rbModeSource.IsChecked = $true
+        $state.SelectedRelease = $null
+    }
+    $state.CurrentRelease = $state.SelectedRelease
+
+    if ($state.Releases.Count -eq 0) {
+        $ui.txtAssetsCaption.Text = 'No releases - source only'
+        if ($Row) {
+            $state.Mode = 'Source'
+            $state.SuppressModeChange = $true
+            try { $ui.rbModeSource.IsChecked = $true } finally { $state.SuppressModeChange = $false }
+            $state.SourceForced = $true
+        }
+    } elseif ($state.ReleaseItems.Count -eq 0) {
+        $ui.txtAssetsCaption.Text = 'Pre-release only - enable the checkbox'
+    } else {
+        if (-not $state.Mode -or $state.SourceForced) {
+            # this repository does have releases: leave the source-only mode that
+            # a previous repository without releases forced on us, but honour the
+            # user's saved preference
+            $state.Mode = if ($state.PreferredMode) { [string]$state.PreferredMode } else { 'Release' }
+            $state.SourceForced = $false
+            if ($state.Mode -eq 'Release') {
+                $state.SuppressModeChange = $true
+                try { $ui.rbModeRelease.IsChecked = $true } finally { $state.SuppressModeChange = $false }
+            }
+        }
+        if ($state.Mode -eq 'Source') {
+            $ui.txtAssetsCaption.Text = 'Source archive'
+        } else {
+            $ui.txtAssetsCaption.Text = 'Files | {0}' -f $picked.Tag
+        }
     }
 
     Update-GhlAssetList
+    Update-GhlInstalledInfo -Row $Row
     Update-GhlActionState
 }
 
@@ -518,9 +695,9 @@ function Update-GhlAssetList {
         $src.Compatible = $true
         $src.Score = 1000
         [void]$state.Assets.Add($src)
-    } elseif ($state.CurrentRelease) {
+    } elseif ($state.SelectedRelease) {
         $list = New-Object System.Collections.Generic.List[pscustomobject]
-        foreach ($a in @($state.CurrentRelease.Assets)) {
+        foreach ($a in @($state.SelectedRelease.Assets)) {
             $item = New-Object GhlAssetItem
             $item.Name = [string]$a.Name
             $item.Size = [long]$a.Size
@@ -539,8 +716,6 @@ function Update-GhlAssetList {
             [void]$state.Assets.Add($item)
         }
     }
-
-    $ui.lstAssets.ItemsSource = $state.Assets
 
     # auto-select: the remembered name, otherwise the highest-scoring usable asset
     $index = -1
@@ -577,7 +752,11 @@ function Start-GhlSearch {
     $state = $Global:GhlState
     $ui = $state.UI
 
-    if ($state.Busy) { return }
+    # a download owns the progress UI; searching would fight with it
+    if ($state.Busy -and $state.BusyKind -eq 'Download') {
+        Show-GhlToast -Message 'Finish or cancel the current download first.' -Kind 'warn'
+        return
+    }
 
     $user = ''
     if ($ui.cbUser.Text) { $user = $ui.cbUser.Text.Trim().TrimStart('@') }
@@ -587,6 +766,8 @@ function Start-GhlSearch {
         return
     }
 
+    # a new search always wins: Start-GhlWorker stops the previous Repos job
+    $state.ReposRequest++
     $state.LastErrorText = ''
     $state.Sync.Phase = 'repos'
     $state.Sync.StatusText = "Loading repositories of $user..."
@@ -598,9 +779,11 @@ function Start-GhlSearch {
     $ui.prgDownload.Value = 0
 
     Start-GhlWorker -Kind 'Repos' -Arguments @{
-        Sync  = $state.Sync
-        User  = $user
-        Token = (Get-GhlCurrentToken)
+        Sync    = $state.Sync
+        User    = $user
+        Token   = (Get-GhlCurrentToken)
+        BaseDir = $state.Config.BaseDir
+        Request = [int]$state.ReposRequest
     }
 }
 
@@ -608,14 +791,15 @@ function Start-GhlReleaseJob {
     param($Row)
 
     $state = $Global:GhlState
+    $state.ReleaseRequest++
     $state.Sync.Phase = 'release'
     $state.Sync.CancelRequested = $false
     Start-GhlWorker -Kind 'Release' -Arguments @{
-        Sync              = $state.Sync
-        User              = $Row.Owner
-        Repo              = $Row.Name
-        Token             = (Get-GhlCurrentToken)
-        IncludePrerelease = [bool]$state.UI.chkPrerelease.IsChecked
+        Sync    = $state.Sync
+        User    = $Row.Owner
+        Repo    = $Row.Name
+        Token   = (Get-GhlCurrentToken)
+        Request = [int]$state.ReleaseRequest
     }
 }
 
@@ -656,11 +840,11 @@ function Start-GhlDownload {
         $url = $src.Url
         $fileName = $src.FileName
     } else {
-        if (-not $state.CurrentRelease -or $state.ReleaseFor -ne $row.FullName) {
+        if (-not $state.SelectedRelease -or $state.ReleaseFor -ine $row.FullName) {
             Show-GhlToast -Message 'Release information is still loading.' -Kind 'warn'
             return
         }
-        $tag = [string]$state.CurrentRelease.Tag
+        $tag = [string]$state.SelectedRelease.Tag
     }
 
     $dest = Get-GhlRepoDir -BaseDir $state.Config.BaseDir -User $row.Owner -Repo $row.Name
@@ -696,18 +880,8 @@ function Start-GhlDownload {
         User     = $row.Owner
         Repo     = $row.Name
         AutoRun  = [bool]$ui.chkRunAfter.IsChecked
+        Release  = $(if ($state.Mode -eq 'Release') { $state.SelectedRelease } else { $null })
         Checksums = $null
-    }
-
-    # published checksums, if this release has them
-    if ($state.Mode -eq 'Release' -and $state.CurrentRelease) {
-        try {
-            $tmpDir = Join-Path (Get-GhlAppDir) 'tmp'
-            $job.Checksums = Get-GhlPublishedChecksums -Release $state.CurrentRelease `
-                -Token $job.Token -TempDir $tmpDir
-        } catch {
-            Write-GhlLog "Checksum lookup skipped: $($_.Exception.Message)" Debug
-        }
     }
 
     $state.BusyKind = 'Download'
@@ -727,13 +901,16 @@ function New-GhlBatchJob {
 
     $state = $Global:GhlState
 
-    # Url stays empty: the worker resolves the best asset (or the source archive)
+    # Url stays empty: the worker resolves the selected release (or source archive)
+    $tag = ''
+    if ($state.Mode -eq 'Release' -and $state.SelectedRelease) { $tag = [string]$state.SelectedRelease.Tag }
+
     return @{
         Url      = ''
         FileName = ''
         DestDir  = (Get-GhlRepoDir -BaseDir $state.Config.BaseDir -User $Row.Owner -Repo $Row.Name)
         Mode     = $state.Mode
-        Tag      = ''
+        Tag      = $tag
         Token    = (Get-GhlCurrentToken)
         User     = $Row.Owner
         Repo     = $Row.Name
@@ -757,8 +934,8 @@ function Start-GhlBatchDownload {
     }
     if ($queue.Count -eq 0) { return }
 
-    # each queued repo costs up to two API calls (latest + maybe list)
-    $needed = $queue.Count * 2
+    # each queued repository costs one API call (the release list)
+    $needed = $queue.Count
     $remaining = 0
     try { $remaining = [int]$state.LastRemaining } catch { }
     if ($remaining -gt 0 -and $remaining -lt $needed) {
@@ -823,7 +1000,7 @@ function Complete-GhlQueueStep {
 
     if ($Ok) {
         $state.QueueDone++
-    } elseif ($ErrKind -in @('noasset', 'norelease')) {
+    } elseif ($ErrKind -in @('noasset', 'norelease', 'versionmissing')) {
         $state.QueueSkipped++
         Show-GhlToast -Message $Message -Kind 'warn' -Ms 3500
     } else {
@@ -999,8 +1176,9 @@ function Show-GhlLaunchConfirm {
     $btnCancel.Add_Click({ param($s, $e) $script:GhlLaunchConfirmResult = $false; $win.Close() })
     $win.Add_KeyDown({
             param($s, $e)
+            # Enter deliberately does nothing: a downloaded program must never
+            # start because a stray key press confirmed the dialog
             if ($e.Key -eq [Windows.Input.Key]::Escape) { $script:GhlLaunchConfirmResult = $false; $win.Close() }
-            if ($e.Key -eq [Windows.Input.Key]::Enter) { $script:GhlLaunchConfirmResult = $true; $win.Close() }
         })
 
     $state.ConfirmWindow = $win
@@ -1192,7 +1370,7 @@ function Set-GhlBackgroundImage {
         $ui.imgBackground.Source = $null
         $ui.imgBackground.Visibility = [Windows.Visibility]::Collapsed
         $ui.rectDim.Opacity = 0
-        return
+        return $false
     }
 
     try {
@@ -1209,12 +1387,14 @@ function Set-GhlBackgroundImage {
         $ui.rectDim.Opacity = [Math]::Min(0.95, [Math]::Max(0.0, ($ui.sldDim.Value / 100.0)))
         Update-GhlRoundedClip
         Write-GhlLog "Background image applied: $Path"
+        return $true
     } catch {
         Write-GhlLog "Background image could not be loaded: $($_.Exception.Message)" Warn
         Show-GhlToast -Message "Could not load that image: $($_.Exception.Message)" -Kind 'warn'
         $ui.imgBackground.Source = $null
         $ui.imgBackground.Visibility = [Windows.Visibility]::Collapsed
         $ui.rectDim.Opacity = 0
+        return $false
     }
 }
 
@@ -1225,28 +1405,27 @@ function Apply-GhlBackgroundSource {
     $ui = $state.UI
 
     if (-not $Source) {
-        Set-GhlBackgroundImage -Path ''
+        [void](Set-GhlBackgroundImage -Path '')
         return
     }
 
     if ($Source -match '^https?://') {
         $cached = Get-GhlBackgroundCachePath -Url $Source
         if (Test-Path -LiteralPath $cached) {
-            Set-GhlBackgroundImage -Path $cached
-            return
+            if (Set-GhlBackgroundImage -Path $cached) { return }
+            # a truncated cache file would otherwise be retried forever
+            try { Remove-Item -LiteralPath $cached -Force -ErrorAction Stop } catch { }
         }
         Show-GhlToast -Message 'Downloading background image...' -Kind 'info' -Ms 2000
         Start-GhlWorker -Kind 'Background' -Arguments @{
-            Sync    = $state.Sync
+            Sync    = $state.SyncBg
             Url     = $Source
             OutFile = $cached
         }
         return
     }
 
-    if (Test-Path -LiteralPath $Source) {
-        Set-GhlBackgroundImage -Path $Source
-    } else {
+    if (-not (Set-GhlBackgroundImage -Path $Source)) {
         Show-GhlToast -Message "Background image not found: $Source" -Kind 'warn'
     }
 }
@@ -1328,7 +1507,17 @@ function Save-GhlUiConfig {
     $cfg = $state.Config
 
     try {
-        $cfg.BaseDir = [string]$ui.txtBaseDir.Text
+        $newBase = [string]$ui.txtBaseDir.Text
+        if ($newBase -and $newBase -ne [string]$cfg.BaseDir) {
+            if (Test-GhlWritablePath -Path $newBase) {
+                $cfg.BaseDir = $newBase
+            } else {
+                # never persist an unusable folder; keep the last working one
+                $ui.txtBaseDir.Text = [string]$cfg.BaseDir
+                $ui.txtFooterInfo.Text = "Downloads: $($cfg.BaseDir)"
+                Show-GhlToast -Message "Cannot write to '$newBase'. Keeping the previous folder." -Kind 'error'
+            }
+        }
         $cfg.BackgroundPath = [string]$ui.txtBg.Text
         $cfg.BackgroundKind = if ($cfg.BackgroundPath -match '^https?://') { 'url' } else { 'file' }
         $cfg.DimmingOpacity = [Math]::Round($ui.sldDim.Value / 100.0, 3)
@@ -1385,12 +1574,18 @@ function Initialize-GhlUiFromConfig {
     $ui.chkRunAfter.IsChecked = [bool]$cfg.RunAfterDownload
     $ui.chkPrerelease.IsChecked = [bool]$cfg.IncludePrerelease
 
-    if ($cfg.DownloadMode -eq 'Source') {
-        $ui.rbModeSource.IsChecked = $true
-        $state.Mode = 'Source'
-    } else {
-        $ui.rbModeRelease.IsChecked = $true
-        $state.Mode = 'Release'
+    $state.PreferredMode = if ($cfg.DownloadMode -eq 'Source') { 'Source' } else { 'Release' }
+    $state.SuppressModeChange = $true
+    try {
+        if ($cfg.DownloadMode -eq 'Source') {
+            $ui.rbModeSource.IsChecked = $true
+            $state.Mode = 'Source'
+        } else {
+            $ui.rbModeRelease.IsChecked = $true
+            $state.Mode = 'Release'
+        }
+    } finally {
+        $state.SuppressModeChange = $false
     }
 
     $dim = [Math]::Round(([double]$cfg.DimmingOpacity) * 100)
@@ -1405,13 +1600,23 @@ function Initialize-GhlUiFromConfig {
 
     if ($cfg.Window) {
         try {
-            if ($cfg.Window.Width -gt 600) { $ui.Window.Width = [double]$cfg.Window.Width }
-            if ($cfg.Window.Height -gt 400) { $ui.Window.Height = [double]$cfg.Window.Height }
+            $wa = [Windows.SystemParameters]::WorkArea
+            $w = [double]$cfg.Window.Width
+            $h = [double]$cfg.Window.Height
+            if ($w -gt 600) { $ui.Window.Width = [Math]::Min($w, $wa.Width) }
+            if ($h -gt 400) { $ui.Window.Height = [Math]::Min($h, $wa.Height) }
             if ($cfg.Window.Left -ge 0 -and $cfg.Window.Top -ge 0) {
-                $ui.Window.Left = [double]$cfg.Window.Left
-                $ui.Window.Top = [double]$cfg.Window.Top
+                # keep a window saved on a monitor that is no longer attached visible
+                $left = [Math]::Min([double]$cfg.Window.Left, $wa.Right - $ui.Window.Width)
+                $top = [Math]::Min([double]$cfg.Window.Top, $wa.Bottom - $ui.Window.Height)
+                $ui.Window.Left = [Math]::Max($wa.Left, $left)
+                $ui.Window.Top = [Math]::Max($wa.Top, $top)
             }
         } catch { }
+    }
+
+    if ($cfg.Window -and [bool]$cfg.Window.Maximized) {
+        Set-GhlMaximized -On $true
     }
 
     $ui.txtFooterInfo.Text = "Downloads: $($cfg.BaseDir)"
@@ -1433,24 +1638,29 @@ function Initialize-GhlUiFromConfig {
 
 function Receive-GhlEvents {
     $state = $Global:GhlState
-    $sync = $state.Sync
-    if (-not $sync) { return }
+    $ui = $state.UI
+    if (-not $ui) { return }
 
-    $evt = $null
-    $guard = 0
-    while ($guard -lt 200 -and $sync.Events.TryDequeue([ref]$evt)) {
-        $guard++
-        try {
-            Invoke-GhlEvent -Event $evt
-        } catch {
-            Write-GhlLog "Event handler failed ($($evt.Kind)): $($_.Exception.Message)" Error
-        }
+    # two independent queues: main work (search/release/download) and the
+    # background image, so their phases and progress never overwrite each other
+    foreach ($sync in @($state.Sync, $state.SyncBg)) {
+        if (-not $sync) { continue }
         $evt = $null
+        $guard = 0
+        while ($guard -lt 200 -and $sync.Events.TryDequeue([ref]$evt)) {
+            $guard++
+            try {
+                Invoke-GhlEvent -Event $evt
+            } catch {
+                Write-GhlLog "Event handler failed ($($evt.Kind)): $($_.Exception.Message)" Error
+            }
+            $evt = $null
+        }
     }
 
     # progress painting
-    $ui = $state.UI
-    if (-not $ui) { return }
+    $sync = $state.Sync
+    if (-not $sync) { return }
 
     $phase = [string]$sync.Phase
     if ($state.Busy -and ($phase -eq 'downloading' -or $phase -eq 'extracting' -or $phase -eq 'repos')) {
@@ -1485,6 +1695,9 @@ function Invoke-GhlEvent {
 
     switch ($kind) {
         'Repos' {
+            if ([int]$Event.Request -ne [int]$state.ReposRequest) {
+                break   # a newer search has already started
+            }
             $state.BusyKind = ''
             Set-GhlBusy -Busy $false
             $state.Sync.Phase = 'idle'
@@ -1492,14 +1705,13 @@ function Invoke-GhlEvent {
             $ui.txtSpeed.Text = ''
 
             if ($Event.Ok) {
-                $state.LastUser = [string]$Event.User
                 Set-GhlRepoRows -Data $Event.Data -User $Event.User
                 Reset-GhlDetails
                 Set-GhlStatus -Text ('Loaded {0} repositories of {1}.' -f $state.AllRepos.Count, $Event.User)
                 if ($state.AllRepos.Count -eq 0) {
                     Show-GhlToast -Message "User '$($Event.User)' has no public repositories." -Kind 'warn'
                 }
-                Update-GhlRateLimit -Remaining $Event.Remaining -ResetAt ''
+                Update-GhlRateLimit -Remaining $Event.Remaining -ResetAt $Event.ResetAt
                 $state.LastRemaining = [int]$Event.Remaining
 
                 # persist the last successful user
@@ -1523,20 +1735,35 @@ function Invoke-GhlEvent {
         }
 
         'Release' {
-            if ($state.SelectedRow -and $state.SelectedRow.FullName -ne ('{0}/{1}' -f $Event.User, $Event.Repo)) {
+            if ([int]$Event.Request -ne [int]$state.ReleaseRequest) {
+                break   # a newer release request has already started
+            }
+            if ($state.SelectedRow -and $state.SelectedRow.FullName -ine ('{0}/{1}' -f $Event.User, $Event.Repo)) {
                 break   # stale response for a previous selection
             }
 
             if ($Event.Ok) {
-                $state.ReleaseCache[[string]$Event.User + '/' + [string]$Event.Repo] = @{ Release = $Event.Data; Ts = (Get-Date) }
-                Apply-GhlRelease -Release $Event.Data -Row $state.SelectedRow
+                $relList = @($Event.Releases)
+                $state.ReleaseCache[[string]$Event.User + '/' + [string]$Event.Repo] = @{ Releases = $relList; Ts = (Get-Date) }
+                Apply-GhlReleases -Releases $relList -Row $state.SelectedRow
+                Update-GhlRateLimit -Remaining $Event.Remaining -ResetAt $Event.ResetAt
             } elseif ($Event.ErrKind -eq 'norelease') {
-                Apply-GhlRelease -Release $null -Row $state.SelectedRow
+                $state.ReleaseCache[[string]$Event.User + '/' + [string]$Event.Repo] = @{ Releases = @(); Ts = (Get-Date) }
+                Apply-GhlReleases -Releases @() -Row $state.SelectedRow
                 Set-GhlStatus -Text 'No releases - source archive available.'
             } else {
+                # never leave the previous repository's release on screen
+                $state.CurrentRelease = $null
+                $state.SelectedRelease = $null
+                $state.Releases = @()
+                $state.ReleaseFor = ''
+                $state.Assets.Clear()
+                $ui.cbRelease.ItemsSource = @()
                 $ui.txtAssetsCaption.Text = 'Release lookup failed'
-                $ui.rbModeSource.IsChecked = $true
                 $state.Mode = 'Source'
+                $state.SuppressModeChange = $true
+                try { $ui.rbModeSource.IsChecked = $true } finally { $state.SuppressModeChange = $false }
+                $state.SourceForced = $true
                 Update-GhlAssetList
                 Set-GhlStatus -Text 'Release lookup failed.'
                 Show-GhlToast -Message ([string]$Event.Message) -Kind 'error' -Ms 6000
@@ -1546,6 +1773,7 @@ function Invoke-GhlEvent {
         'Download' {
             # in batch mode the queue owns the busy state and the status line
             $inBatch = ($state.Queue -and $state.Queue.Count -gt 0)
+            if ([int]$Event.Remaining -ge 0) { Update-GhlRateLimit -Remaining ([int]$Event.Remaining) }
             if (-not $inBatch) {
                 $state.BusyKind = ''
                 Set-GhlBusy -Busy $false
@@ -1558,6 +1786,9 @@ function Invoke-GhlEvent {
             if ($Event.Ok) {
                 $state.LastDownloadDir = [string]$Event.DestDir
                 Update-GhlRowBadge -User $Event.User -Repo $Event.Repo
+                if ($state.SelectedRow -and $state.SelectedRow.Owner -eq $Event.User -and $state.SelectedRow.Name -eq $Event.Repo) {
+                    Update-GhlInstalledInfo -Row $state.SelectedRow
+                }
                 $sizeText = Format-GhlSize $Event.Bytes
                 if (-not $inBatch) { Set-GhlStatus -Text ("Downloaded $($Event.Repo) ($sizeText).") }
 
@@ -1568,6 +1799,11 @@ function Invoke-GhlEvent {
                 if ($inBatch) {
                     # batch runs never launch: the queue would block on a modal dialog
                     [void](Complete-GhlQueueStep -Ok $true)
+                } elseif ($Event.AutoRun -and -not [bool]$Event.Launchable) {
+                    # .msix/.appx are installed by Windows; launching the file
+                    # directly would start an installer instead of the app
+                    try { Open-GhlFolder -Path ([string]$Event.DestDir) } catch { }
+                    Show-GhlToast -Message 'Downloaded. Windows installs .msix/.appx packages when you open the file.' -Kind 'info' -Ms 6000
                 } elseif ($Event.AutoRun) {
                     # the picker is modal; dispatch it after the current timer tick
                     # returns so no nested message loop runs inside the pump
@@ -1629,12 +1865,16 @@ function Invoke-GhlEvent {
 
         'Background' {
             if ($Event.Ok) {
-                Set-GhlBackgroundImage -Path $Event.Path
-                Show-GhlToast -Message 'Background updated.' -Kind 'success' -Ms 2000
+                if (Set-GhlBackgroundImage -Path $Event.Path) {
+                    Show-GhlToast -Message 'Background updated.' -Kind 'success' -Ms 2000
+                } else {
+                    # a corrupt download must not stay in the cache
+                    try { Remove-Item -LiteralPath ([string]$Event.Path) -Force -ErrorAction Stop } catch { }
+                }
             } else {
                 Show-GhlToast -Message ("Background download failed: " + [string]$Event.Message) -Kind 'warn'
             }
-            $state.Sync.Phase = 'idle'
+            $state.SyncBg.Phase = 'idle'
         }
     }
 }
@@ -1648,11 +1888,19 @@ function Update-GhlRateLimit {
         return
     }
 
+    $resetText = ''
+    if ($ResetAt) {
+        try {
+            $when = Convert-GhlApiDate -Raw $ResetAt
+            if ($when) { $resetText = ' Resets at {0:HH:mm}.' -f ([DateTime]$when).ToLocalTime() }
+        } catch { }
+    }
+
     if ($Remaining -le 5) {
-        $ui.txtRateLimit.Text = "API calls left: $Remaining (limited)"
+        $ui.txtRateLimit.Text = "API calls left: $Remaining (limited).$resetText"
         $ui.txtRateLimit.Foreground = $Global:GhlState.Brushes.Warn
     } else {
-        $ui.txtRateLimit.Text = "API calls left this hour: $Remaining"
+        $ui.txtRateLimit.Text = "API calls left this hour: $Remaining.$resetText"
         $ui.txtRateLimit.Foreground = $Global:GhlState.Brushes.TextDim
     }
 }
@@ -1892,13 +2140,61 @@ function Connect-GhlEvents {
     # --- modes ------------------------------------------------------------
     $ui.rbModeRelease.Add_Checked({
             param($s, $e)
-            $Global:GhlState.Mode = 'Release'
+            $st = $Global:GhlState
+            if ($st.SuppressModeChange) { return }
+            $st.Mode = 'Release'
+            $st.PreferredMode = 'Release'
+            $st.SourceForced = $false
+            if ($st.SelectedRelease) { $st.UI.txtAssetsCaption.Text = 'Files | {0}' -f $st.SelectedRelease.Tag }
             Update-GhlAssetList
         })
     $ui.rbModeSource.Add_Checked({
             param($s, $e)
-            $Global:GhlState.Mode = 'Source'
+            $st = $Global:GhlState
+            if ($st.SuppressModeChange) { return }
+            $st.Mode = 'Source'
+            $st.PreferredMode = 'Source'
+            $st.SourceForced = $false
+            $st.UI.txtAssetsCaption.Text = 'Source archive'
             Update-GhlAssetList
+        })
+
+    # --- release picker ---------------------------------------------------
+    $ui.cbRelease.Add_SelectionChanged({
+            param($s, $e)
+            $st = $Global:GhlState
+            if ($st.SuppressReleaseChange) { return }
+            $picked = $s.SelectedItem
+            if (-not $picked) { return }
+
+            $rel = Select-GhlReleaseByTag -Releases $st.Releases -Tag ([string]$picked.Tag)
+            $st.SelectedRelease = $rel
+            $st.CurrentRelease = $rel
+            if ($rel) {
+                $st.Mode = 'Release'
+                $st.UI.txtAssetsCaption.Text = 'Files | {0}' -f $picked.Tag
+                if ($st.UI.rbModeRelease.IsChecked -ne $true) { $st.UI.rbModeRelease.IsChecked = $true }
+            }
+            Update-GhlAssetList
+            Update-GhlInstalledInfo -Row $st.SelectedRow
+            Update-GhlActionState
+        })
+
+    $ui.btnReleaseRefresh.Add_Click({
+            param($s, $e)
+            $st = $Global:GhlState
+            $row = $st.SelectedRow
+            if (-not $row) { return }
+            $st.ReleaseCache.Remove($row.FullName)
+            $st.Releases = @()
+            $st.SelectedRelease = $null
+            $st.CurrentRelease = $null
+            $st.ReleaseFor = ''
+            $st.Assets.Clear()
+            $st.UI.cbRelease.ItemsSource = @()
+            $st.UI.txtAssetsCaption.Text = 'Loading releases...'
+            Update-GhlActionState
+            Start-GhlReleaseJob -Row $row
         })
 
     $ui.lstAssets.Add_SelectionChanged({ param($s, $e) Update-GhlActionState })
@@ -1913,9 +2209,23 @@ function Connect-GhlEvents {
     $ui.chkPrerelease.Add_Checked({
             param($s, $e)
             $st = $Global:GhlState
-            if ($st.SelectedRow) {
-                $key = $st.SelectedRow.FullName
-                if ($st.ReleaseCache.ContainsKey($key)) { $st.ReleaseCache.Remove($key) }
+            if (-not $st.SelectedRow) { return }
+            $key = $st.SelectedRow.FullName
+            if ($st.ReleaseCache.ContainsKey($key) -and ((Get-Date) - $st.ReleaseCache[$key].Ts).TotalMinutes -lt 10) {
+                # the list is already cached: filter it, no API request
+                Apply-GhlReleases -Releases $st.ReleaseCache[$key].Releases -Row $st.SelectedRow
+            } else {
+                Show-GhlRepoDetails -Row $st.SelectedRow
+            }
+        })
+    $ui.chkPrerelease.Add_Unchecked({
+            param($s, $e)
+            $st = $Global:GhlState
+            if (-not $st.SelectedRow) { return }
+            $key = $st.SelectedRow.FullName
+            if ($st.ReleaseCache.ContainsKey($key) -and ((Get-Date) - $st.ReleaseCache[$key].Ts).TotalMinutes -lt 10) {
+                Apply-GhlReleases -Releases $st.ReleaseCache[$key].Releases -Row $st.SelectedRow
+            } else {
                 Show-GhlRepoDetails -Row $st.SelectedRow
             }
         })
@@ -1973,6 +2283,7 @@ function Connect-GhlEvents {
                 $st.Config.BaseDir = $dlg.SelectedPath
                 $st.UI.txtFooterInfo.Text = "Downloads: $($dlg.SelectedPath)"
                 Update-GhlAllBadges
+                Update-GhlInstalledInfo -Row $st.SelectedRow
                 Update-GhlActionState
             }
             $dlg.Dispose()
@@ -1991,6 +2302,7 @@ function Connect-GhlEvents {
             $st.Config.BaseDir = $path
             $st.UI.txtFooterInfo.Text = "Downloads: $path"
             Update-GhlAllBadges
+            Update-GhlInstalledInfo -Row $st.SelectedRow
             Update-GhlActionState
         })
 
@@ -2074,6 +2386,7 @@ function Connect-GhlEvents {
             $st = $Global:GhlState
             Write-GhlLog 'Window closing.'
             try { $st.Sync.CancelRequested = $true } catch { }
+            try { $st.SyncBg.CancelRequested = $true } catch { }
             if ($st.FilterTimer) { $st.FilterTimer.Stop() }
             Stop-GhlToastTimer
 
@@ -2110,7 +2423,6 @@ function Start-GitHubLauncher {
 
     $config = Get-GhlConfig
     $sync = [hashtable]::Synchronized(@{
-            Busy             = $false
             Phase            = 'idle'
             StatusText       = ''
             ProgressPercent  = -1.0
@@ -2119,8 +2431,16 @@ function Start-GitHubLauncher {
             SpeedBps         = 0.0
             CancelRequested  = $false
             Events           = New-Object System.Collections.Concurrent.ConcurrentQueue[object]
-            LastError        = $null
-            RepoCache        = @{}
+        })
+    $syncBg = [hashtable]::Synchronized(@{
+            Phase            = 'idle'
+            StatusText       = ''
+            ProgressPercent  = -1.0
+            BytesReceived    = 0L
+            BytesTotal       = -1L
+            SpeedBps         = 0.0
+            CancelRequested  = $false
+            Events           = New-Object System.Collections.Concurrent.ConcurrentQueue[object]
         })
 
     # No Application object anywhere. Application.Shutdown() permanently kills the
@@ -2154,33 +2474,42 @@ function Start-GitHubLauncher {
     }
 
     $Global:GhlState = @{
-        App             = $null
         UI              = $ui
         Config          = $config
         Sync            = $sync
+        SyncBg          = $syncBg
         Pool            = $null
         Jobs            = @{}
         Repos           = New-Object System.Collections.ObjectModel.ObservableCollection[GhlRepoRow]
         AllRepos        = @()
         Assets          = New-Object System.Collections.ObjectModel.ObservableCollection[GhlAssetItem]
+        Releases        = @()
+        ReleaseItems    = @()
         ReleaseCache    = @{}
         SelectedRow     = $null
         CurrentRelease  = $null
+        SelectedRelease = $null
         ReleaseFor      = ''
+        ReposRequest    = 0
+        ReleaseRequest  = 0
         Mode            = 'Release'
+        PreferredMode   = $(if ($config.DownloadMode -eq 'Source') { 'Source' } else { 'Release' })
+        SourceForced    = $false
+        SuppressModeChange = $false
         Busy            = $false
         BusyKind        = ''
         LastErrorText   = ''
-        LastUser        = [string]$config.LastUser
         LastDownloadDir = ''
         Maximized       = $false
         RestoreBounds   = $null
         FilterTimer     = $null
+        FilterTokens    = @()
         ToastTimer      = $null
         Brushes         = $brushes
         PickerWindow    = $null
         ConfirmWindow   = $null
-        SuppressSelection = $false
+        SuppressSelection     = $false
+        SuppressReleaseChange = $false
         Queue           = $null
         QueueTotal      = 0
         QueueDone       = 0

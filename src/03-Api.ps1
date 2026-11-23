@@ -48,99 +48,103 @@ function Invoke-GhlHttp {
     $lastError = ''
     $attempt = 0
 
-    while ($attempt -le $MaxRetry) {
-        $attempt++
-        $client = $null
-        $req = $null
-        try {
-            $handler = New-Object System.Net.Http.HttpClientHandler
-            $handler.AllowAutoRedirect = $true
-            $handler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
+    # One client for the whole call: a retry must not pay for a new TLS handshake.
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $handler.AutomaticDecompression = [System.Net.DecompressionMethods]::GZip -bor [System.Net.DecompressionMethods]::Deflate
 
-            $client = New-Object System.Net.Http.HttpClient($handler)
-            $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
 
-            $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $Url)
-            [void]$req.Headers.TryAddWithoutValidation('User-Agent', $Global:GHL_UserAgent)
-            [void]$req.Headers.TryAddWithoutValidation('Accept', $Accept)
-            if ($Token) {
-                [void]$req.Headers.TryAddWithoutValidation('Authorization', "Bearer $Token")
-            }
-
-            $resp = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-            $status = [int]$resp.StatusCode
-            $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-
-            $headers = @{}
-            foreach ($h in $resp.Headers) { $headers[$h.Key] = ($h.Value -join ', ') }
-            foreach ($h in $resp.Content.Headers) { $headers[$h.Key] = ($h.Value -join ', ') }
-            $resp.Dispose()
-
-            $json = $null
-            if ($body) {
-                try { $json = ConvertFrom-Json $body } catch { $json = $null }
-            }
-
-            $kind = 'ok'
-            if ($status -ge 400) {
-                $remaining = -1
-                if ($headers.ContainsKey('X-RateLimit-Remaining')) {
-                    [void][int]::TryParse($headers['X-RateLimit-Remaining'], [ref]$remaining)
+    try {
+        while ($attempt -le $MaxRetry) {
+            $attempt++
+            $req = $null
+            try {
+                $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $Url)
+                [void]$req.Headers.TryAddWithoutValidation('User-Agent', $Global:GHL_UserAgent)
+                [void]$req.Headers.TryAddWithoutValidation('Accept', $Accept)
+                [void]$req.Headers.TryAddWithoutValidation('X-GitHub-Api-Version', '2022-11-28')
+                if ($Token) {
+                    [void]$req.Headers.TryAddWithoutValidation('Authorization', "Bearer $Token")
                 }
-                if ($status -eq 401) { $kind = 'auth' }
-                elseif ($status -eq 403 -and $remaining -eq 0) { $kind = 'ratelimit' }
-                elseif ($status -eq 403 -and $body -match 'rate limit') { $kind = 'ratelimit' }
-                elseif ($status -eq 403) { $kind = 'forbidden' }
-                elseif ($status -eq 404) { $kind = 'notfound' }
-                elseif ($status -eq 422) { $kind = 'invalid' }
-                elseif ($status -eq 429) { $kind = 'ratelimit' }
-                elseif ($status -ge 500) { $kind = 'server' }
-                else { $kind = 'http' }
-            }
 
-            # retry only transient server failures
-            if ($kind -eq 'server' -and $attempt -le $MaxRetry) {
-                $lastError = "HTTP $status"
-                Start-Sleep -Milliseconds (400 * $attempt)
-                continue
-            }
+                $resp = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                $status = [int]$resp.StatusCode
+                $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
 
-            return [pscustomobject]@{
-                Ok      = ($status -ge 200 -and $status -lt 300)
-                Status  = $status
-                Body    = $body
-                Json    = $json
-                Headers = $headers
-                Error   = ''
-                Kind    = $kind
-            }
-        } catch {
-            $lastError = $_.Exception.Message
-            $inner = $_.Exception.InnerException
-            if ($inner) { $lastError = $inner.Message }
+                $headers = @{}
+                foreach ($h in $resp.Headers) { $headers[$h.Key] = ($h.Value -join ', ') }
+                foreach ($h in $resp.Content.Headers) { $headers[$h.Key] = ($h.Value -join ', ') }
+                $resp.Dispose()
 
-            if ($attempt -le $MaxRetry) {
-                Start-Sleep -Milliseconds (400 * $attempt)
-                continue
+                $json = $null
+                if ($body) {
+                    try { $json = ConvertFrom-Json $body } catch { $json = $null }
+                }
+
+                $kind = 'ok'
+                if ($status -ge 400) {
+                    $remaining = -1
+                    if ($headers.ContainsKey('X-RateLimit-Remaining')) {
+                        [void][int]::TryParse($headers['X-RateLimit-Remaining'], [ref]$remaining)
+                    }
+                    if ($status -eq 401) { $kind = 'auth' }
+                    elseif ($status -eq 403 -and $remaining -eq 0) { $kind = 'ratelimit' }
+                    elseif ($status -eq 403 -and $body -match 'rate limit') { $kind = 'ratelimit' }
+                    elseif ($status -eq 403) { $kind = 'forbidden' }
+                    elseif ($status -eq 404) { $kind = 'notfound' }
+                    elseif ($status -eq 422) { $kind = 'invalid' }
+                    elseif ($status -eq 429) { $kind = 'ratelimit' }
+                    elseif ($status -ge 500) { $kind = 'server' }
+                    else { $kind = 'http' }
+                }
+
+                # retry only transient server failures
+                if ($kind -eq 'server' -and $attempt -le $MaxRetry) {
+                    $lastError = "HTTP $status"
+                    Start-Sleep -Milliseconds (400 * $attempt)
+                    continue
+                }
+
+                return [pscustomobject]@{
+                    Ok      = ($status -ge 200 -and $status -lt 300)
+                    Status  = $status
+                    Body    = $body
+                    Json    = $json
+                    Headers = $headers
+                    Error   = ''
+                    Kind    = $kind
+                }
+            } catch {
+                $lastError = $_.Exception.Message
+                $inner = $_.Exception.InnerException
+                if ($inner) { $lastError = $inner.Message }
+
+                if ($attempt -le $MaxRetry) {
+                    Start-Sleep -Milliseconds (400 * $attempt)
+                    continue
+                }
+                return [pscustomobject]@{
+                    Ok      = $false
+                    Status  = 0
+                    Body    = ''
+                    Json    = $null
+                    Headers = @{}
+                    Error   = $lastError
+                    Kind    = 'network'
+                }
+            } finally {
+                if ($req) { $req.Dispose() }
             }
-            return [pscustomobject]@{
-                Ok      = $false
-                Status  = 0
-                Body    = ''
-                Json    = $null
-                Headers = @{}
-                Error   = $lastError
-                Kind    = 'network'
-            }
-        } finally {
-            if ($req) { $req.Dispose() }
-            if ($client) { $client.Dispose() }
         }
-    }
 
-    return [pscustomobject]@{
-        Ok = $false; Status = 0; Body = ''; Json = $null; Headers = @{}
-        Error = $lastError; Kind = 'network'
+        return [pscustomobject]@{
+            Ok = $false; Status = 0; Body = ''; Json = $null; Headers = @{}
+            Error = $lastError; Kind = 'network'
+        }
+    } finally {
+        if ($client) { $client.Dispose() }
     }
 }
 
@@ -156,12 +160,19 @@ function Convert-GhlResetTime {
     return $null
 }
 
-function Get-GhlErrorMessage {
-    param($Response, [string]$Fallback = 'Unknown error')
+function Convert-GhlApiDate {
+    <# Parses a GitHub timestamp without depending on the current culture. #>
+    param($Raw)
 
-    if ($Response.Json -and $Response.Json.message) { return [string]$Response.Json.message }
-    if ($Response.Error) { return [string]$Response.Error }
-    return $Fallback
+    if (-not $Raw) { return $null }
+    try {
+        return [DateTime]::Parse(
+            [string]$Raw,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal).ToLocalTime()
+    } catch {
+        return $null
+    }
 }
 
 function Invoke-GhlApi {
@@ -293,24 +304,26 @@ function Convert-GhlAsset {
     param($Raw)
 
     $name = [string]$Raw.name
+    $autoLaunch = -not ($name -match '(?i)\.(msix|msixbundle|appx|appxbundle)$')
     return [pscustomobject]@{
-        Name        = $name
-        Size        = [long]$Raw.size
-        Url         = [string]$Raw.browser_download_url
-        ContentType = [string]$Raw.content_type
-        Compatible  = (Test-GhlAssetCompatible -Name $name)
-        Score       = (Get-GhlAssetScore -Name $name)
-        IsArchive   = ($name -match '\.(zip|tar\.gz|tgz)$')
+        Name          = $name
+        Size          = [long]$Raw.size
+        Url           = [string]$Raw.browser_download_url
+        ContentType   = [string]$Raw.content_type
+        Compatible    = (Test-GhlAssetCompatible -Name $name)
+        Score         = (Get-GhlAssetScore -Name $name)
+        IsArchive     = ($name -match '\.(zip|tar\.gz|tgz)$')
+        DownloadCount = [int]$Raw.download_count
+        AutoLaunchable = $autoLaunch
     }
 }
 
 function Convert-GhlRelease {
     param($Raw)
 
-    $published = $null
-    if ($Raw.published_at) {
-        try { $published = [DateTime]::Parse($Raw.published_at).ToLocalTime() } catch { }
-    }
+    $published = Convert-GhlApiDate -Raw $Raw.published_at
+    $created = Convert-GhlApiDate -Raw $Raw.created_at
+
     return [pscustomobject]@{
         Tag        = [string]$Raw.tag_name
         Name       = if ($Raw.name) { [string]$Raw.name } else { [string]$Raw.tag_name }
@@ -318,6 +331,7 @@ function Convert-GhlRelease {
         Prerelease = [bool]$Raw.prerelease
         Draft      = [bool]$Raw.draft
         Published  = $published
+        CreatedAt  = $created
         Assets     = @($Raw.assets | ForEach-Object { Convert-GhlAsset $_ })
         HtmlUrl    = [string]$Raw.html_url
         TarballUrl = [string]$Raw.tarball_url
@@ -377,24 +391,61 @@ function Get-GhlRepoInfo {
     return New-GhlApiResult -Ok $true -Status 200 -Kind 'ok' -Data (Convert-GhlRepo $res.Data) -Remaining $res.Remaining
 }
 
-function Get-GhlReleaseList {
+function Get-GhlReleases {
+    <#
+        Returns every published release of the repository, newest first.
+        Drafts are dropped; pre-releases stay in the list because the UI filters
+        them client-side without spending another API request.
+        Kind='norelease' means "nothing to show", not an error.
+    #>
     param(
         [Parameter(Mandatory)][string]$User,
         [Parameter(Mandatory)][string]$Repo,
         [string]$Token,
-        [int]$PerPage = 10
+        [int]$PerPage = 30
     )
 
     $path = '/repos/{0}/{1}/releases?per_page={2}' -f [Uri]::EscapeDataString($User), [Uri]::EscapeDataString($Repo), $PerPage
     $res = Invoke-GhlApi -Path $path -Token $Token
-    if (-not $res.Ok) { return $res }
-    return New-GhlApiResult -Ok $true -Status 200 -Kind 'ok' -Data @($res.Data | ForEach-Object { Convert-GhlRelease $_ }) -Remaining $res.Remaining
+
+    if (-not $res.Ok) {
+        if ($res.Kind -eq 'notfound') {
+            return New-GhlApiResult -Ok $false -Kind 'norelease' -Message 'This repository has no published releases.' -Remaining $res.Remaining
+        }
+        return $res
+    }
+
+    $list = @(@($res.Data) | ForEach-Object { if ($_) { Convert-GhlRelease $_ } } | Where-Object { $_ -and -not $_.Draft })
+
+    $sorted = @($list | Sort-Object -Property @{
+            Expression = { if ($_.Published) { [DateTime]$_.Published } elseif ($_.CreatedAt) { [DateTime]$_.CreatedAt } else { [DateTime]::MinValue } }
+            Descending = $true
+        })
+
+    if ($sorted.Count -eq 0) {
+        return New-GhlApiResult -Ok $false -Kind 'norelease' -Message 'This repository has no published releases.' -Remaining $res.Remaining
+    }
+
+    return New-GhlApiResult -Ok $true -Status 200 -Kind 'ok' -Data $sorted -Remaining $res.Remaining
+}
+
+function Select-GhlReleaseByTag {
+    <# Finds a release in a list by tag (case-insensitive). Returns $null when absent. #>
+    param($Releases, [string]$Tag)
+
+    if (-not $Tag) { return $null }
+    $wanted = $Tag.Trim()
+    foreach ($r in @($Releases)) {
+        if ($null -eq $r) { continue }
+        if ([string]$r.Tag -ieq $wanted) { return $r }
+    }
+    return $null
 }
 
 function Get-GhlLatestRelease {
     <#
-        Returns Kind='ok' with Data=release, or Kind='norelease' when the repo
-        simply has no usable release (not an error for the UI).
+        Compatibility wrapper around Get-GhlReleases: the newest stable release,
+        or the newest release of any kind when -IncludePrerelease is set.
     #>
     param(
         [Parameter(Mandatory)][string]$User,
@@ -403,32 +454,18 @@ function Get-GhlLatestRelease {
         [switch]$IncludePrerelease
     )
 
-    $path = '/repos/{0}/{1}/releases/latest' -f [Uri]::EscapeDataString($User), [Uri]::EscapeDataString($Repo)
-    $res = Invoke-GhlApi -Path $path -Token $Token
+    $list = Get-GhlReleases -User $User -Repo $Repo -Token $Token
+    if (-not $list.Ok) { return $list }
 
-    if ($res.Ok) {
-        return New-GhlApiResult -Ok $true -Status 200 -Kind 'ok' -Data (Convert-GhlRelease $res.Data) -Remaining $res.Remaining
-    }
-
-    if ($res.Kind -notin @('notfound', 'forbidden', 'invalid')) { return $res }
-
-    # /latest returns 404 for pre-release-only and draft-only repositories
-    $list = Get-GhlReleaseList -User $User -Repo $Repo -Token $Token -PerPage 20
-    if (-not $list.Ok) {
-        if ($list.Kind -eq 'notfound') {
-            return New-GhlApiResult -Ok $false -Kind 'norelease' -Message 'This repository has no published releases.'
-        }
-        return $list
-    }
-
-    $candidates = @($list.Data | Where-Object { -not $_.Draft })
+    $candidates = @($list.Data)
     if (-not $IncludePrerelease) {
-        $stable = @($candidates | Where-Object { -not $_.Prerelease })
-        if ($stable.Count -gt 0) { $candidates = $stable }
+        $candidates = @($candidates | Where-Object { -not $_.Prerelease })
     }
 
     if ($candidates.Count -eq 0) {
-        return New-GhlApiResult -Ok $false -Kind 'norelease' -Message 'This repository has no published releases.'
+        return New-GhlApiResult -Ok $false -Kind 'norelease' `
+            -Message 'This repository only has pre-release versions. Enable "Include pre-release" to see them.' `
+            -Remaining $list.Remaining
     }
 
     return New-GhlApiResult -Ok $true -Status 200 -Kind 'ok' -Data $candidates[0] -Remaining $list.Remaining
@@ -442,7 +479,6 @@ function New-GhlSourceArchive {
     return [pscustomobject]@{
         Url      = ('{0}/repos/{1}/{2}/zipball' -f $Global:GHL_ApiBase, [Uri]::EscapeDataString($User), [Uri]::EscapeDataString($Repo))
         FileName = "$safeRepo-source.zip"
-        Revision = ''
         IsArchive = $true
     }
 }

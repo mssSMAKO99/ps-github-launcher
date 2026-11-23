@@ -1,5 +1,7 @@
 # build output
 GitHubLauncher.ps1.bak
+dist/
+*.part
 
 # local captures / logs
 tests/.offline.log

@@ -116,7 +116,8 @@ function Write-GhlLog {
 
     try {
         if ($Level -eq 'Debug' -and -not $Global:GHL_DebugLog) { return }
-        $dir = Join-Path $env:LOCALAPPDATA 'GitHubLauncher\logs'
+        # honour GHL_CONFIG_DIR so tests and screenshots never write to the real profile
+        $dir = Join-Path (Get-GhlAppDir) 'logs'
         if (-not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }

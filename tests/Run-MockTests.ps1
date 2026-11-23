@@ -106,6 +106,52 @@ Test-Case 'latest release with assets' {
     Assert-True ($win.Score -gt $linux.Score) 'windows asset must outrank linux'
 }
 
+Test-Case 'release list keeps every published version, newest first' {
+    $r = Get-GhlReleases -User 'mockuser' -Repo 'demo-tool'
+    Assert-True $r.Ok "failed: $($r.Message)"
+    Assert-Equal 3 $r.Data.Count
+    Assert-Equal 'v1.3.0' $r.Data[0].Tag
+    Assert-Equal 'v1.2.0' $r.Data[1].Tag
+    Assert-Equal 'v1.1.0' $r.Data[2].Tag
+    Assert-True $r.Data[0].Prerelease 'the first version must be the pre-release'
+    Assert-True (-not ($r.Data.Tag -contains 'v1.4.0')) 'drafts must be dropped'
+}
+
+Test-Case 'latest release is the newest stable unless pre-releases are asked for' {
+    $stable = Get-GhlLatestRelease -User 'mockuser' -Repo 'demo-tool'
+    Assert-True $stable.Ok "failed: $($stable.Message)"
+    Assert-Equal 'v1.2.0' $stable.Data.Tag
+
+    $pre = Get-GhlLatestRelease -User 'mockuser' -Repo 'demo-tool' -IncludePrerelease
+    Assert-True $pre.Ok "failed: $($pre.Message)"
+    Assert-Equal 'v1.3.0' $pre.Data.Tag
+}
+
+Test-Case 'a tag selects one exact version' {
+    $r = Get-GhlReleases -User 'mockuser' -Repo 'demo-tool'
+    $old = Select-GhlReleaseByTag -Releases $r.Data -Tag 'v1.1.0'
+    Assert-True ($null -ne $old) 'v1.1.0 must be found'
+    Assert-Equal 'v1.1.0' $old.Tag
+    Assert-True ($null -eq (Select-GhlReleaseByTag -Releases $r.Data -Tag 'v9.9.9')) 'missing tag must return null'
+}
+
+Test-Case 'msix packages are not auto-launchable' {
+    $r = Get-GhlReleases -User 'mockuser' -Repo 'demo-tool'
+    $old = Select-GhlReleaseByTag -Releases $r.Data -Tag 'v1.1.0'
+    $msix = $old.Assets | Where-Object { $_.Name -match '\.msix$' }
+    Assert-True ($null -ne $msix) 'the msix asset must exist'
+    Assert-True (-not $msix.AutoLaunchable) 'msix must not be auto-launched'
+    $zip = $old.Assets | Where-Object { $_.Name -match 'windows.*\.zip$' }
+    Assert-True $zip.AutoLaunchable 'the windows zip must stay launchable'
+}
+
+Test-Case 'a release without a date does not break parsing' {
+    $raw = [pscustomobject]@{ tag_name = 'v0.0.1'; published_at = $null; created_at = $null; assets = @() }
+    $rel = Convert-GhlRelease -Raw $raw
+    Assert-Equal 'v0.0.1' $rel.Tag
+    Assert-True ($null -eq $rel.Published) 'missing date must stay null'
+}
+
 Test-Case 'release without releases becomes norelease' {
     $r = Get-GhlLatestRelease -User 'mockuser' -Repo 'no-release'
     Assert-True (-not $r.Ok)
@@ -199,6 +245,7 @@ if ($NoUi) {
         $psi.CreateNoWindow = $true
         $psi.EnvironmentVariables['GHL_API_BASE'] = $mock.BaseUrl
         $psi.EnvironmentVariables['GHL_DEBUG'] = '1'
+        $psi.EnvironmentVariables['GHL_MOCK_REQUEST_LOG'] = $mock.RequestLog
 
         $proc = [Diagnostics.Process]::Start($psi)
         $stdout = $proc.StandardOutput.ReadToEnd()

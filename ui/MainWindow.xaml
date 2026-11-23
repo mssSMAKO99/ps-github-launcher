@@ -318,15 +318,33 @@
                                 </StackPanel>
 
                                 <StackPanel Grid.Row="1" Margin="14,14,14,0">
-                                    <TextBlock Text="DOWNLOAD MODE" Style="{StaticResource SectionHeader}"/>
+                                    <TextBlock Text="VERSION" Style="{StaticResource SectionHeader}"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="cbRelease" Style="{StaticResource GhlComboBox}"
+                                                  ToolTip="Choose the release version to download"/>
+                                        <Button x:Name="btnReleaseRefresh" Grid.Column="1"
+                                                Style="{StaticResource SmallButton}"
+                                                Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" FontSize="12"
+                                                Padding="9,7" Margin="6,0,0,0"
+                                                ToolTip="Reload the release list"/>
+                                    </Grid>
+                                    <TextBlock x:Name="txtInstalled" Style="{StaticResource Hint}"
+                                               Margin="2,6,0,0" Text="Not installed"/>
+
+                                    <TextBlock Text="DOWNLOAD MODE" Style="{StaticResource SectionHeader}"
+                                               Margin="0,14,0,0"/>
                                     <RadioButton x:Name="rbModeRelease" Style="{StaticResource GhlRadio}"
-                                                 GroupName="dlmode" Content="Latest release assets"
+                                                 GroupName="dlmode" Content="Package release"
                                                  IsChecked="True"/>
                                     <RadioButton x:Name="rbModeSource" Style="{StaticResource GhlRadio}"
                                                  GroupName="dlmode" Content="Source code (.zip)"/>
                                 </StackPanel>
 
-                                <TextBlock x:Name="txtAssetsCaption" Grid.Row="2" Text="Assets"
+                                <TextBlock x:Name="txtAssetsCaption" Grid.Row="2" Text="Files"
                                            Style="{StaticResource Label}" Margin="14,14,14,4"/>
 
                                 <ListBox x:Name="lstAssets" Grid.Row="3" Style="{StaticResource GhlListBox}"
@@ -357,6 +375,9 @@
                                 <StackPanel x:Name="pnlActions" Grid.Row="4" Margin="14,6,14,14">
                                     <Button x:Name="btnDownload" Style="{StaticResource PrimaryButton}"
                                             Content="Download" IsEnabled="False"/>
+                                    <TextBlock x:Name="txtBatchHint" Style="{StaticResource Hint}"
+                                               Margin="2,6,0,0" TextWrapping="Wrap"
+                                               Visibility="Collapsed"/>
                                     <Grid Margin="0,8,0,0">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>

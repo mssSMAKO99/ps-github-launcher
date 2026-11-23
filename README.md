@@ -4,17 +4,20 @@ A single-file WPF launcher for GitHub repositories, in the spirit of ChrisTitusT
 search a user's repositories, pick a release asset (or the source archive), download it into a
 strict folder layout, and optionally run it right away.
 
-It ships as **one compiled `.ps1`** that can be executed without cloning anything:
+It ships as **one compiled `.ps1`**, usable without cloning anything:
 
 ```powershell
-irm https://example.com/GitHubLauncher.ps1 | iex
+# quick start on any PC with Windows PowerShell
+irm https://mssSMAKO99.github.io/gl | iex
 ```
 
-or
+or save the file and run it directly:
 
 ```powershell
-powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
+powershell.exe -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 ```
+
+The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one.
 
 ---
 
@@ -26,9 +29,9 @@ powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
 | Favourites | Pin logins with the star button. The editable combo box offers them next time; managed in Settings. Stored case-insensitively, max 15. |
 | Auth | Optional PAT (fine-grained or classic). Stored with DPAPI (`ConvertFrom-SecureString`), never in plaintext unless DPAPI is unavailable. |
 | Filter | Client-side, 250 ms debounce, matches name / description / language, token-based (`rust cli`). |
-| Releases | Latest release, or the newest one incl. pre-release when the checkbox is on. Repos without releases silently fall back to source mode. |
-| Batch | Select several repositories (Ctrl/Shift-click, Ctrl+A) and download them in one go. Sequential, one at a time; a repo with no usable Windows asset is skipped and reported. |
-| Assets | Full asset list, sorted: usable Windows packages first, other-OS builds and checksums greyed out. |
+| Releases | Every published version (up to 30) in a picker, newest stable selected by default. Drafts are hidden; pre-releases appear when the checkbox is on. The panel shows what is already installed and whether the selected version is newer. |
+| Batch | Select several repositories (Ctrl/Shift-click, Ctrl+A) and download them in one go. The version chosen in the details panel is used for all of them; repositories that do not have it, or have no usable Windows asset, are skipped and reported. |
+| Assets | Full asset list for the selected version, sorted: usable Windows packages first, other-OS builds and checksums greyed out. `.msix`/`.appx` packages are offered for download but never auto-launched. |
 | Download | HttpClient streaming, real byte progress, smoothed MB/s, ETA, cancel button, `.part` + atomic rename. |
 | Safety | Extracted executables get a `Zone.Identifier` mark (ZoneId=3). Published checksums are verified. Launching asks for confirmation with size, SHA-256 and Authenticode status. |
 | Extract | `.zip` (zip-slip protected) and `.tar.gz` (member names *and* links validated). Single root folder is unwrapped automatically. |
@@ -73,7 +76,7 @@ GithubLauncher/
 ├─ Compile.ps1              # build: concatenate + embed + validate
 ├─ dev.ps1                  # run straight from source
 ├─ VERSION                  # auto-incremented by the build
-├─ GitHubLauncher.ps1       # build artifact (generated, not committed)
+├─ GitHubLauncher.ps1       # build artifact (committed; also published as a release and as Pages `gl`)
 ├─ ui/
 │  ├─ Styles.xaml           # palette, control templates, DataGrid + scrollbar styles
 │  ├─ MainWindow.xaml       # main window
@@ -139,14 +142,15 @@ after a restart. XAML is read from `ui/` instead of the embedded copy.
 
 ## Distribution: `irm | iex`
 
-The artifact is meant to be published as a single flat file and run with:
+The artifact is published as a single flat file and run with:
 
 ```powershell
-irm https://<you>.github.io/gl | iex
+irm https://mssSMAKO99.github.io/gl | iex
 ```
 
+The same bytes are available as `GitHubLauncher.ps1` (repository root, release asset and Pages copy).
 Everything (`Styles.xaml`, `MainWindow.xaml`, `PickerWindow.xaml`, the icon) is embedded, so there is
-nothing else to host — one file, no folders.
+nothing else to host - one file, no folders.
 
 Two constraints make or break that path, and both are enforced by `Compile.ps1`:
 
@@ -184,7 +188,7 @@ What they cover:
 | Suite | Coverage |
 | --- | --- |
 | `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
-| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: release asset -> exe -> marker (+ MOTW), no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch |
+| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
 | `Run-UiRepeat.ps1` | the window opens twice in one PowerShell session, runs via `-File`, and refuses to start in an MTA host |
 | `Ui-Integration.ps1` | the same flow against api.github.com |
 
@@ -220,8 +224,8 @@ powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 ```
 UI thread (STA)                         RunspacePool (1..4 threads)
 ────────────────                        ───────────────────────────
-Window / DataGrid / ProgressBar         Invoke-GhlUserRepos
-  ▲                                     Invoke-GhlLatestRelease
+Window / DataGrid / ProgressBar         Get-GhlUserRepos
+  ▲                                     Get-GhlReleases
   │ DispatcherTimer, 120 ms             Invoke-GhlDownload
   │                                     Expand-GhlArchive
   └── reads $sync fields                Find-GhlExecutables
@@ -233,6 +237,8 @@ Window / DataGrid / ProgressBar         Invoke-GhlUserRepos
 * The UI drains the queue on a timer and re-renders. No `Dispatcher.Invoke` from a worker, so no
   deadlocks on close and no per-chunk message-pump flooding.
 * `$sync` is a `[hashtable]::Synchronized` holding only primitives and the queue.
+* The background-image download has its own `$syncBg` queue, so it can never overwrite the progress
+  or phase of a repository download.
 * One live job per kind; starting a new search stops the previous pipeline.
 * Closing the window cancels the transfer, stops every pipeline, closes the pool — the host process
   exits instead of lingering.
@@ -301,7 +307,8 @@ or cancelled download can never be mistaken for a complete one.
 * Set `GHL_CONFIG_DIR` to point the whole app at a different settings folder (used by the tests so
   they never touch your real config).
 
-Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB).
+Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB); with `GHL_CONFIG_DIR`
+set, they go to `$env:GHL_CONFIG_DIR\logs` together with the config.
 
 ---
 
@@ -313,7 +320,9 @@ Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB).
 | No public repos | `200` + `[]` | empty state + warning toast |
 | IP rate limit | `403` + `X-RateLimit-Remaining: 0` | message with reset time, token field focused |
 | Bad PAT | `401` | "GitHub rejected the token", token field focused |
-| No releases | `404` on `/releases/latest` | falls back to source mode, Release radio disabled |
+| No releases | `200` + empty `/releases` list | "No releases - source only", source mode selected |
+| Pre-release only | non-empty list, filter off | hint to enable "Include pre-release" |
+| Version missing in batch | batch tag not found | repository skipped, reported in the batch summary |
 | Truncated transfer | bytes < `Content-Length` | error, `.part` deleted |
 | Broken archive | extract exception | error, marker not written, badge stays `Partial` |
 | Zip-slip entry | path outside destination | archive rejected before anything is written |

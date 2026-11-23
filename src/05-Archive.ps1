@@ -61,6 +61,14 @@ function Expand-GhlZip {
             throw "Archive contains $total entries, which exceeds the $($Global:GHL_MaxExtractFiles) entry limit."
         }
 
+        # measure before writing: a bomb must be refused while nothing has been
+        # extracted yet, not after the disk is already full
+        $declared = 0L
+        foreach ($entry in $zip.Entries) { $declared += [long]$entry.Length }
+        if ($declared -gt $Global:GHL_MaxExtractBytes) {
+            throw "Archive expands beyond the $([Math]::Round($Global:GHL_MaxExtractBytes / 1GB, 1)) GB safety limit."
+        }
+
         foreach ($entry in $zip.Entries) {
             if ($Sync -and $Sync.CancelRequested) { throw 'CANCELLED' }
 
