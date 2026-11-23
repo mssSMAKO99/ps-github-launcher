@@ -40,10 +40,10 @@ The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one
 | Extract | `.zip` (zip-slip protected) and `.tar.gz` (member names *and* links validated). Single root folder is unwrapped automatically. |
 | Launch | `.exe` / `.msi` / `.ps1` / `.bat` / `.cmd`. One candidate launches directly; several open a picker with "remember my choice". Off by default. |
 | Layout | `{BaseDir}\{Username}\{Repository}` with a `.ghl.json` marker so a badge can distinguish *Downloaded* from *Partial*. |
-| UI | Borderless, dark, the background image respects the rounded corners, custom titlebar + edge resize, animated spinner, toast notifications, settings overlay (gear). |
+| UI | Borderless, softer palette, rounded metadata chips in the details panel, custom titlebar + edge resize, animated spinner, toast notifications, settings overlay (gear) with General / Appearance / Advanced tabs and visible keyboard focus rings. |
 | Themes | Four built-in palettes - Midnight, Graphite, Ocean, Light - switched live from Settings (no restart) and saved in `config.json`. |
 | Background | Local file or URL, JPEG/PNG/BMP/GIF, dimming slider. Animated GIFs play frame by frame, pause when the window is hidden or minimized and can be switched off. |
-| Settings | Base folder, theme, background, dimming, favourites, debug log, PAT, mode, checkboxes and window geometry persisted to `%LocalAppData%\GitHubLauncher\config.json`. |
+| Settings | Tabbed overlay: base folder, theme, background, dimming, favourites, debug log, PAT, mode, checkboxes and window geometry persisted to `%LocalAppData%\GitHubLauncher\config.json`. |
 
 ### Launch safety
 
@@ -249,7 +249,7 @@ What they cover:
 | Suite | Coverage |
 | --- | --- |
 | `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), theme palettes and config migration, mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
-| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, theme switch + animated GIF + animation toggle, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
+| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, theme switch + animated GIF + settings tabs + metadata chips + focus ring, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
 | `Run-UiRepeat.ps1` | the window opens twice in one PowerShell session, runs via `-File`, and refuses to start in an MTA host |
 | `Ui-Integration.ps1` | the same flow against api.github.com |
 
@@ -265,7 +265,7 @@ Visual checks:
 ```powershell
 # renders the window against the mock API and saves a PNG
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tools\Capture-Ui.ps1 -Out shot.png `
-    -Theme Light -Background C:\path\to\wallpaper.gif -AfterDownload
+    -Theme Light -Settings -SettingsTab Appearance -Background C:\path\to\wallpaper.gif
 ```
 
 Smoke test that the real window boots and shuts down cleanly:

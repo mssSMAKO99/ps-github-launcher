@@ -467,6 +467,45 @@ $automation = {
                         if (((Get-Date) - $script:GifStopAt).TotalMilliseconds -lt 300) { return }
                         if ($st.Gif) { throw 'unchecking animation did not stop the GIF player' }
                         $script:GifStopped = 'yes'
+                        $script:Stage = 'ux'
+                    }
+
+                    'ux' {
+                        # chips replace the old meta line
+                        if ($ui.pnlRepoChips.Children.Count -lt 4) {
+                            throw "expected metadata chips, found $($ui.pnlRepoChips.Children.Count)"
+                        }
+                        if ($ui.txtRepoMeta.Visibility -ne [Windows.Visibility]::Collapsed) {
+                            throw 'the old meta line must stay hidden behind the chips'
+                        }
+                        # keyboard focus ring must be a real style, not the WPF null default
+                        if (-not $ui.btnDownload.FocusVisualStyle) { throw 'buttons have no focus ring' }
+
+                        Show-GhlSettings -Show $true
+                        if ($ui.pnlTabGeneral.Visibility -ne [Windows.Visibility]::Visible) {
+                            throw 'General must be the default settings tab'
+                        }
+
+                        $ui.rbTabAppearance.IsChecked = $true
+                        if ($ui.pnlTabAppearance.Visibility -ne [Windows.Visibility]::Visible) {
+                            throw 'Appearance tab did not switch the panel'
+                        }
+                        if ($ui.pnlTabGeneral.Visibility -eq [Windows.Visibility]::Visible) {
+                            throw 'General panel stayed visible next to Appearance'
+                        }
+                        if (-not $ui.rbTabAppearance.IsChecked) { throw 'the Appearance tab is not marked as selected' }
+
+                        $ui.rbTabAdvanced.IsChecked = $true
+                        if ($ui.pnlTabAdvanced.Visibility -ne [Windows.Visibility]::Visible) {
+                            throw 'Advanced tab did not switch the panel'
+                        }
+                        if ($ui.pnlTabAppearance.Visibility -eq [Windows.Visibility]::Visible) {
+                            throw 'Appearance panel stayed visible next to Advanced'
+                        }
+
+                        $ui.rbTabGeneral.IsChecked = $true
+                        Show-GhlSettings -Show $false
+                        $script:UxOk = 'tabs+chips+focus'
                         $script:Stage = 'done'
                     }
                 }
@@ -481,7 +520,7 @@ $automation = {
 
                 if ($script:Stage -eq 'done') {
                     $s.Stop()
-                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ntheme=$($script:ThemeAfter)`ntext=$($script:ThemeText)`ngifframes=$($script:GifFrames)`ngifshown=$($script:GifShown)`ngifstopped=$($script:GifStopped)`ndir=$($script:DestDir)")
+                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ntheme=$($script:ThemeAfter)`ntext=$($script:ThemeText)`ngifframes=$($script:GifFrames)`ngifshown=$($script:GifShown)`ngifstopped=$($script:GifStopped)`nux=$($script:UxOk)`ndir=$($script:DestDir)")
                     $ui.Window.Close()
                 }
             } catch {
