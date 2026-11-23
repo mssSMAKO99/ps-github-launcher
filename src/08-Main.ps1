@@ -129,9 +129,11 @@ function Get-GhlUiMap {
         'txtBaseDir', 'btnBrowseBase', 'chkRunAfter', 'chkPrerelease', 'btnOpenBase',
         'txtBg', 'btnBrowseBg', 'txtDimLabel', 'sldDim', 'btnClearBg', 'txtFooterInfo',
         'cbTheme', 'txtThemeHint', 'chkAnimateBg',
+        'rbTabGeneral', 'rbTabAppearance', 'rbTabAdvanced',
+        'pnlTabGeneral', 'pnlTabAppearance', 'pnlTabAdvanced',
         'txtFilter', 'txtFilterPlaceholder', 'spinner', 'btnRefresh', 'txtCount',
         'dgRepos', 'pnlEmpty', 'txtEmptyTitle', 'txtEmptyHint',
-        'txtRepoName', 'txtRepoDesc', 'txtRepoMeta',
+        'txtRepoName', 'txtRepoDesc', 'txtRepoMeta', 'pnlRepoChips',
         'cbRelease', 'btnReleaseRefresh', 'txtInstalled',
         'rbModeRelease', 'rbModeSource', 'txtAssetsCaption', 'lstAssets',
         'btnDownload', 'btnOpenFolder', 'btnRepoPage', 'txtBatchHint',
@@ -503,6 +505,7 @@ function Reset-GhlDetails {
     $ui.txtRepoName.Text = 'No repository selected'
     $ui.txtRepoDesc.Text = ''
     $ui.txtRepoMeta.Text = ''
+    if ($ui.ContainsKey('pnlRepoChips') -and $ui.pnlRepoChips) { $ui.pnlRepoChips.Children.Clear() }
     $ui.txtAssetsCaption.Text = 'Files'
     Update-GhlActionState
 }
@@ -524,6 +527,7 @@ function Show-GhlRepoDetails {
     $meta = '{0}  |  {1} stars  |  {2} forks  |  updated {3}' -f $Row.Language, $Row.Stars, $Row.Forks, $Row.UpdatedText
     if ($Row.Owner) { $meta = "$($Row.Owner)  |  $meta" }
     $ui.txtRepoMeta.Text = $meta
+    Update-GhlRepoChips -Row $Row
     Update-GhlInstalledInfo -Row $Row
 
     $key = $Row.FullName
@@ -1976,6 +1980,86 @@ function Update-GhlBaseDirHint {
     $ui.txtBaseDirHint.Text = "Saving to: $($state.Config.BaseDir)"
 }
 
+function New-GhlChip {
+    <# A small rounded label. Brushes are resolved dynamically so the chip
+       follows a theme change without being rebuilt. #>
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [string]$ForegroundKey = 'TextDimBrush',
+        [string]$BackgroundKey = 'HoverBrush',
+        [string]$BorderKey = 'BorderWeakBrush'
+    )
+
+    $label = New-Object Windows.Controls.TextBlock
+    $label.Text = $Text
+    $label.FontSize = 10.5
+    $label.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, $ForegroundKey)
+
+    $chip = New-Object Windows.Controls.Border
+    $chip.CornerRadius = New-Object Windows.CornerRadius 9
+    $chip.Padding = New-Object Windows.Thickness 8, 2.5, 8, 2.5
+    $chip.Margin = New-Object Windows.Thickness 0, 0, 6, 6
+    $chip.BorderThickness = New-Object Windows.Thickness 1
+    $chip.SetResourceReference([Windows.Controls.Border]::BorderBrushProperty, $BorderKey)
+    $chip.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, $BackgroundKey)
+    $chip.Child = $label
+    return $chip
+}
+
+function Update-GhlRepoChips {
+    <# Replaces the old one-line meta text with label/value pills. #>
+    param($Row)
+
+    $ui = $Global:GhlState.UI
+    $panel = $ui.pnlRepoChips
+    if (-not $panel) { return }
+    $panel.Children.Clear()
+    if (-not $Row) { return }
+
+    if ($Row.Owner) {
+        [void]$panel.Children.Add((New-GhlChip -Text ([string]$Row.Owner) `
+                    -ForegroundKey 'AccentBrush' -BackgroundKey 'AccentSoftBrush' -BorderKey 'AccentBrush'))
+    }
+    if ($Row.Language -and $Row.Language -ne '-') {
+        [void]$panel.Children.Add((New-GhlChip -Text ([string]$Row.Language)))
+    }
+    [void]$panel.Children.Add((New-GhlChip -Text ('{0} stars' -f [int]$Row.Stars) `
+                -ForegroundKey 'WarnBrush' -BackgroundKey 'WarnSoftBrush' -BorderKey 'WarnBrush'))
+    [void]$panel.Children.Add((New-GhlChip -Text ('{0} forks' -f [int]$Row.Forks)))
+    if ($Row.UpdatedText) {
+        [void]$panel.Children.Add((New-GhlChip -Text ('updated ' + [string]$Row.UpdatedText)))
+    }
+}
+
+function Select-GhlSettingsTab {
+    <# One tab visible at a time; the choice survives closing the overlay. #>
+    param([string]$Name = 'General')
+
+    $state = $Global:GhlState
+    $ui = $state.UI
+    if (-not $ui.rbTabGeneral) { return }
+
+    switch ($Name) {
+        'Appearance' { $target = 'Appearance' }
+        'Advanced' { $target = 'Advanced' }
+        default { $target = 'General' }
+    }
+    $state.SettingsTab = $target
+
+    $state.SuppressSettingsTab = $true
+    try {
+        $ui.rbTabGeneral.IsChecked = ($target -eq 'General')
+        $ui.rbTabAppearance.IsChecked = ($target -eq 'Appearance')
+        $ui.rbTabAdvanced.IsChecked = ($target -eq 'Advanced')
+
+        $ui.pnlTabGeneral.Visibility = if ($target -eq 'General') { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+        $ui.pnlTabAppearance.Visibility = if ($target -eq 'Appearance') { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+        $ui.pnlTabAdvanced.Visibility = if ($target -eq 'Advanced') { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+    } finally {
+        $state.SuppressSettingsTab = $false
+    }
+}
+
 function Show-GhlSettings {
     param([bool]$Show = $true)
 
@@ -1986,6 +2070,7 @@ function Show-GhlSettings {
 
     if ($Show) {
         Update-GhlFavoritesUi
+        Select-GhlSettingsTab -Name ([string]$state.SettingsTab)
         $ui.txtSettingsSaved.Text = ''
         $ui.settingsPanel.Focus() | Out-Null
     }
@@ -2040,6 +2125,19 @@ function Connect-GhlEvents {
             Show-GhlSettings -Show $false
         })
     $ui.settingsScrim.Add_MouseLeftButtonDown({ param($s, $e) Show-GhlSettings -Show $false })
+
+    $ui.rbTabGeneral.Add_Checked({
+            param($s, $e)
+            if (-not $Global:GhlState.SuppressSettingsTab) { Select-GhlSettingsTab -Name 'General' }
+        })
+    $ui.rbTabAppearance.Add_Checked({
+            param($s, $e)
+            if (-not $Global:GhlState.SuppressSettingsTab) { Select-GhlSettingsTab -Name 'Appearance' }
+        })
+    $ui.rbTabAdvanced.Add_Checked({
+            param($s, $e)
+            if (-not $Global:GhlState.SuppressSettingsTab) { Select-GhlSettingsTab -Name 'Advanced' }
+        })
 
     $ui.chkDebugLog.Add_Checked({
             param($s, $e)
@@ -2576,6 +2674,8 @@ function Start-GitHubLauncher {
         ToastTimer      = $null
         Brushes         = $brushes
         Theme           = 'Midnight'
+        SettingsTab     = 'General'
+        SuppressSettingsTab = $false
         Gif             = $null
         SuppressThemeChange      = $false
         SuppressAppearanceChange = $false

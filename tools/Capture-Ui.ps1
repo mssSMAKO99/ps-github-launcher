@@ -13,6 +13,7 @@ param(
     [string]$Out = (Join-Path $PSScriptRoot 'ui-screenshot.png'),
     [switch]$AfterDownload,
     [switch]$Settings,
+    [string]$SettingsTab = 'General',
     [string]$Theme = '',
     [string]$Background = ''
 )
@@ -41,6 +42,7 @@ $Global:GhlShotOut = $Out
 $Global:GhlShotDownload = [bool]$AfterDownload
 $Global:GhlShotBackground = [string]$Background
 $Global:GhlShotSettings = [bool]$Settings
+$Global:GhlShotSettingsTab = [string]$SettingsTab
 $Global:GhlShotTheme = [string]$Theme
 $Global:GhlShotBase = Join-Path $env:TEMP ('ghl-shot-downloads-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
 
@@ -114,6 +116,7 @@ $automation = {
                                 # give the overlay a layout pass before rendering
                                 $script:SettingsShown = $true
                                 Show-GhlSettings -Show $true
+                                Select-GhlSettingsTab -Name ([string]$Global:GhlShotSettingsTab)
                                 $script:SettleUntil = (Get-Date).AddMilliseconds(700)
                                 return
                             }

@@ -123,8 +123,8 @@
                                     <Separator Style="{StaticResource HLine}"/>
 
                                     <TextBlock Text="FAVOURITES" Style="{StaticResource SectionHeader}"/>
-                                    <ListBox x:Name="lstFavorites" Style="{StaticResource GhlListBox}"
-                                             MaxHeight="150" MinHeight="34"/>
+                                    <ListBox x:Name="lstFavorites" Style="{StaticResource GhlChipListBox}"
+                                             MaxHeight="120" MinHeight="34"/>
                                     <TextBlock x:Name="txtFavoritesEmpty" Style="{StaticResource Hint}"
                                                Text="Star a user with the button above."
                                                Margin="2,4,0,0"/>
@@ -314,7 +314,9 @@
                                                Foreground="{DynamicResource TextDimBrush}" TextWrapping="Wrap"
                                                MaxHeight="96"/>
                                     <TextBlock x:Name="txtRepoMeta" Text="" FontSize="10.5" Margin="0,8,0,0"
-                                               Foreground="{DynamicResource TextFaintBrush}" TextWrapping="Wrap"/>
+                                               Foreground="{DynamicResource TextFaintBrush}" TextWrapping="Wrap"
+                                               Visibility="Collapsed"/>
+                                    <WrapPanel x:Name="pnlRepoChips" Margin="0,8,0,0"/>
                                 </StackPanel>
 
                                 <StackPanel Grid.Row="1" Margin="14,14,14,0">
@@ -337,11 +339,13 @@
 
                                     <TextBlock Text="DOWNLOAD MODE" Style="{StaticResource SectionHeader}"
                                                Margin="0,14,0,0"/>
-                                    <RadioButton x:Name="rbModeRelease" Style="{StaticResource GhlRadio}"
-                                                 GroupName="dlmode" Content="Package release"
-                                                 IsChecked="True"/>
-                                    <RadioButton x:Name="rbModeSource" Style="{StaticResource GhlRadio}"
-                                                 GroupName="dlmode" Content="Source code (.zip)"/>
+                                    <WrapPanel>
+                                        <RadioButton x:Name="rbModeRelease" Style="{StaticResource GhlModeChip}"
+                                                     GroupName="dlmode" Content="Package release"
+                                                     IsChecked="True"/>
+                                        <RadioButton x:Name="rbModeSource" Style="{StaticResource GhlModeChip}"
+                                                     GroupName="dlmode" Content="Source code (.zip)"/>
+                                    </WrapPanel>
                                 </StackPanel>
 
                                 <TextBlock x:Name="txtAssetsCaption" Grid.Row="2" Text="Files"
@@ -454,83 +458,101 @@
                                         FontSize="11" ToolTip="Close (Esc)"/>
                             </Grid>
 
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
-                                          Padding="18,0,12,0">
-                                <StackPanel>
-                                    <TextBlock Text="DOWNLOADS" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock Text="Base folder" Style="{StaticResource Label}"
-                                               Margin="0,0,0,4"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtBaseDir" Style="{StaticResource GhlTextBox}"/>
-                                        <Button x:Name="btnBrowseBase" Grid.Column="1" Content="..."
-                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
-                                                MinWidth="30" ToolTip="Choose folder"/>
-                                    </Grid>
-                                    <Button x:Name="btnOpenBase" Style="{StaticResource GhlButton}"
-                                            Content="Open base folder" Margin="0,10,0,0"/>
-                                    <TextBlock x:Name="txtFooterInfo" Style="{StaticResource Hint}"
-                                               Margin="0,10,0,0"/>
+                            <Grid Grid.Row="1">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
 
-                                    <Separator Style="{StaticResource HLine}"/>
-
-                                    <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock Text="Color theme" Style="{StaticResource Label}"
-                                               Margin="0,0,0,4"/>
-                                    <ComboBox x:Name="cbTheme" Style="{StaticResource GhlComboBox}"
-                                              ToolTip="Recolors the whole window immediately"/>
-                                    <TextBlock x:Name="txtThemeHint" Style="{StaticResource Hint}"
-                                               Margin="2,6,0,0"
-                                               Text="Applied immediately; saved with Done."/>
-                                    <TextBlock Text="Background image (path or URL)" Style="{StaticResource Label}"
-                                               Margin="0,10,0,4"/>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="txtBg" Style="{StaticResource GhlTextBox}"/>
-                                        <Button x:Name="btnBrowseBg" Grid.Column="1" Content="..."
-                                                Style="{StaticResource SmallButton}" Margin="6,0,0,0"
-                                                MinWidth="30" ToolTip="Choose image"/>
-                                    </Grid>
-                                    <CheckBox x:Name="chkAnimateBg" Style="{StaticResource GhlCheckBox}"
-                                              Content="Animate GIF backgrounds" Margin="0,8,0,0"/>
-                                    <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%"
-                                               Style="{StaticResource Label}" Margin="0,10,0,0"/>
-                                    <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
-                                            Minimum="0" Maximum="90" Value="55"
-                                            SmallChange="1" LargeChange="10"/>
-                                    <Button x:Name="btnClearBg" Style="{StaticResource GhlButton}"
-                                            Content="Reset background" Margin="0,10,0,0"/>
-
-                                    <Separator Style="{StaticResource HLine}"/>
-
-                                    <TextBlock Text="ADVANCED" Style="{StaticResource SectionHeader}"/>
-                                    <CheckBox x:Name="chkDebugLog" Style="{StaticResource GhlCheckBox}"
-                                              Content="Verbose debug log" Margin="0,0,0,0"/>
-                                    <Grid Margin="0,10,0,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Button x:Name="btnOpenLogs" Style="{StaticResource GhlButton}"
-                                                Content="Open logs" Margin="0,0,5,0"/>
-                                        <Button x:Name="btnOpenConfigDir" Grid.Column="1"
-                                                Style="{StaticResource GhlButton}"
-                                                Content="Settings folder" Margin="5,0,0,0"/>
-                                    </Grid>
-
-                                    <Separator Style="{StaticResource HLine}"/>
-
-                                    <TextBlock Text="ABOUT" Style="{StaticResource SectionHeader}"/>
-                                    <TextBlock x:Name="txtAbout" Style="{StaticResource Hint}"
-                                               TextWrapping="Wrap"/>
+                                <StackPanel Orientation="Horizontal" Margin="18,0,12,12">
+                                    <RadioButton x:Name="rbTabGeneral" Style="{StaticResource GhlTab}"
+                                                 GroupName="settingsTab" Content="General" IsChecked="True"/>
+                                    <RadioButton x:Name="rbTabAppearance" Style="{StaticResource GhlTab}"
+                                                 GroupName="settingsTab" Content="Appearance"/>
+                                    <RadioButton x:Name="rbTabAdvanced" Style="{StaticResource GhlTab}"
+                                                 GroupName="settingsTab" Content="Advanced"/>
                                 </StackPanel>
-                            </ScrollViewer>
+
+                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                                              Padding="18,0,12,0">
+                                    <Grid>
+                                        <StackPanel x:Name="pnlTabGeneral">
+                                            <TextBlock Text="DOWNLOADS" Style="{StaticResource SectionHeader}"/>
+                                            <TextBlock Text="Base folder" Style="{StaticResource Label}"
+                                                       Margin="0,0,0,4"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="txtBaseDir" Style="{StaticResource GhlTextBox}"/>
+                                                <Button x:Name="btnBrowseBase" Grid.Column="1" Content="..."
+                                                        Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                        MinWidth="30" ToolTip="Choose folder"/>
+                                            </Grid>
+                                            <Button x:Name="btnOpenBase" Style="{StaticResource GhlButton}"
+                                                    Content="Open base folder" Margin="0,10,0,0"/>
+                                            <TextBlock x:Name="txtFooterInfo" Style="{StaticResource Hint}"
+                                                       Margin="0,10,0,0"/>
+                                        </StackPanel>
+
+                                        <StackPanel x:Name="pnlTabAppearance" Visibility="Collapsed">
+                                            <TextBlock Text="APPEARANCE" Style="{StaticResource SectionHeader}"/>
+                                            <TextBlock Text="Color theme" Style="{StaticResource Label}"
+                                                       Margin="0,0,0,4"/>
+                                            <ComboBox x:Name="cbTheme" Style="{StaticResource GhlComboBox}"
+                                                      ToolTip="Recolors the whole window immediately"/>
+                                            <TextBlock x:Name="txtThemeHint" Style="{StaticResource Hint}"
+                                                       Margin="2,6,0,0"
+                                                       Text="Applied immediately; saved with Done."/>
+                                            <TextBlock Text="Background image (path or URL)"
+                                                       Style="{StaticResource Label}" Margin="0,10,0,4"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="txtBg" Style="{StaticResource GhlTextBox}"/>
+                                                <Button x:Name="btnBrowseBg" Grid.Column="1" Content="..."
+                                                        Style="{StaticResource SmallButton}" Margin="6,0,0,0"
+                                                        MinWidth="30" ToolTip="Choose image"/>
+                                            </Grid>
+                                            <CheckBox x:Name="chkAnimateBg" Style="{StaticResource GhlCheckBox}"
+                                                      Content="Animate GIF backgrounds" Margin="0,8,0,0"/>
+                                            <TextBlock x:Name="txtDimLabel" Text="Dimming: 55%"
+                                                       Style="{StaticResource Label}" Margin="0,10,0,0"/>
+                                            <Slider x:Name="sldDim" Style="{StaticResource GhlSlider}"
+                                                    Minimum="0" Maximum="90" Value="55"
+                                                    SmallChange="1" LargeChange="10"/>
+                                            <Button x:Name="btnClearBg" Style="{StaticResource GhlButton}"
+                                                    Content="Reset background" Margin="0,10,0,0"/>
+                                        </StackPanel>
+
+                                        <StackPanel x:Name="pnlTabAdvanced" Visibility="Collapsed">
+                                            <TextBlock Text="DIAGNOSTICS" Style="{StaticResource SectionHeader}"/>
+                                            <CheckBox x:Name="chkDebugLog" Style="{StaticResource GhlCheckBox}"
+                                                      Content="Verbose debug log" Margin="0,0,0,0"/>
+                                            <Grid Margin="0,10,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Button x:Name="btnOpenLogs" Style="{StaticResource GhlButton}"
+                                                        Content="Open logs" Margin="0,0,5,0"/>
+                                                <Button x:Name="btnOpenConfigDir" Grid.Column="1"
+                                                        Style="{StaticResource GhlButton}"
+                                                        Content="Settings folder" Margin="5,0,0,0"/>
+                                            </Grid>
+
+                                            <Separator Style="{StaticResource HLine}"/>
+
+                                            <TextBlock Text="ABOUT" Style="{StaticResource SectionHeader}"/>
+                                            <TextBlock x:Name="txtAbout" Style="{StaticResource Hint}"
+                                                       TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </ScrollViewer>
+                            </Grid>
 
                             <Border Grid.Row="2" BorderThickness="0,1,0,0"
                                     BorderBrush="{DynamicResource BorderBrush}"
