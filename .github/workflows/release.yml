@@ -1,0 +1,173 @@
+# Release pipeline.
+#
+#   tag v1.2.3  -> build 1.2.3, publish a GitHub Release, push `gl` to Pages
+#   push main   -> build the current VERSION, refresh the `nightly` prerelease,
+#                  push `gl` to Pages
+#
+# Pages lives in a different repository, so a GITHUB_TOKEN cannot write to it;
+# set PAGES_DEPLOY_TOKEN (fine-grained PAT, Contents: read+write on
+# mssSMAKO99/msssmako99.github.io). Without it the Pages job warns and skips.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            channel="tag"
+          else
+            version="$(tr -d '[:space:]' < VERSION)"
+            channel="nightly"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error title=Bad version::Unsupported version '$version'. Tag with v1.2.3."
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version: $version ($channel)"
+
+  build:
+    name: build
+    needs: prepare
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: publish release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: ghl-dist
+          path: dist
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          assets=(GitHubLauncher.ps1 gl SHA256SUMS.txt)
+
+          if [[ "$CHANNEL" == "tag" ]]; then
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" "${assets[@]}" --clobber
+              gh release edit "$TAG" --title "GitHub Launcher $VERSION"
+            else
+              gh release create "$TAG" "${assets[@]}" \
+                --title "GitHub Launcher $VERSION" \
+                --generate-notes
+            fi
+            echo "published release $TAG"
+          else
+            title="Nightly build ${VERSION} (${SHA:0:7})"
+            if gh release view nightly >/dev/null 2>&1; then
+              gh release upload nightly "${assets[@]}" --clobber
+              gh release edit nightly --title "$title" --prerelease
+            else
+              gh release create nightly "${assets[@]}" \
+                --title "$title" \
+                --prerelease \
+                --notes "Automatic build of the current main branch. Not a stable release."
+            fi
+            echo "published nightly prerelease"
+          fi
+
+  pages:
+    name: deploy gl to Pages
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # never let two deploys interleave; queued runs still run one after another
+    concurrency:
+      group: ghl-pages-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check deploy token
+        id: token
+        env:
+          PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "${PAGES_DEPLOY_TOKEN}" ]]; then
+            echo "::warning title=Pages deploy skipped::PAGES_DEPLOY_TOKEN is not set. Add a fine-grained token with Contents:write on mssSMAKO99/msssmako99.github.io, otherwise https://mssSMAKO99.github.io/gl stays stale."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download distribution
+        if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ghl-dist
+          path: dist
+
+      - name: Push gl to msssmako99.github.io
+        if: steps.token.outputs.present == 'true'
+        env:
+          PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          git clone --depth 1 \
+            "https://x-access-token:${PAGES_DEPLOY_TOKEN}@github.com/mssSMAKO99/msssmako99.github.io.git" \
+            "$work"
+          cp dist/gl "$work/gl"
+
+          cd "$work"
+          if git diff --quiet -- gl; then
+            echo "Pages copy of gl is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gl
+          git commit -m "Deploy GitHub Launcher ${VERSION} (${SHA:0:7})"
+          git push
+          echo "deployed gl ($VERSION)"

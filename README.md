@@ -19,6 +19,9 @@ powershell.exe -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 
 The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one.
 
+[![ci](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml)
+[![release](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml)
+
 ---
 
 ## Features
@@ -103,6 +106,9 @@ GithubLauncher/
    └─ MockApi.ps1           # HttpListener stand-in for the GitHub API
 ```
 
+CI lives in `.github/workflows/`: `build.yml` is the reusable build+test job, `ci.yml` runs it on
+branches and pull requests, `release.yml` publishes releases and deploys `gl` to Pages.
+
 The numeric prefixes are the concatenation order used by `Compile.ps1`; the build fails if the
 order does not match.
 
@@ -116,7 +122,7 @@ powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\Compile.ps1
 
 The build:
 
-1. increments `VERSION`,
+1. increments `VERSION` (unless `-NoVersionBump`/`-Version` says otherwise),
 2. generates `ui/assets/icon.png` if missing,
 3. embeds all three XAML documents and the icon as base64,
 4. concatenates `src/*.ps1` in order,
@@ -130,6 +136,17 @@ The build:
     PowerShell 5.1 decodes the body as ANSI when the host sends no charset (gists and GitHub
     Pages both do that). Pass `-Bom` to opt out (then the file is only usable with `-File`),
 11. prints size, encoding, line count and SHA-256.
+
+CI and release builds stamp an explicit version instead of guessing:
+
+```powershell
+powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\Compile.ps1 `
+    -NoVersionBump -Version 1.2.3
+```
+
+`-Version` accepts `x.y.z` (optionally with a `-suffix`), strips a leading `v`, rewrites `VERSION`
+to match and takes precedence over `-NoVersionBump`. A malformed value fails the build before
+anything is written.
 
 ## Develop
 
@@ -165,6 +182,44 @@ built artifact.
 
 ---
 
+## Continuous delivery
+
+Three workflows, all on `windows-latest` for the build and Windows PowerShell 5.1 throughout:
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `ci.yml` | pull requests, pushes to branches | calls the reusable build: offline unit tests, mock API/download tests (`-NoUi`), compile, ASCII/no-BOM gate. Publishes nothing. |
+| `release.yml` | push of a `v*` tag, push to `main`, manual | same build, then a GitHub Release (tags) or the `nightly` prerelease (`main`), and a `<pages>` deploy. |
+| `build.yml` | called by the two above | builds `dist/GitHubLauncher.ps1`, extensionless `dist/gl` and `dist/SHA256SUMS.txt`, uploads them as the `ghl-dist` artifact. |
+
+Cutting a release is a tag push:
+
+```powershell
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The build stamps `1.2.3` into the artifact, every gate must pass, and the release gets
+`GitHubLauncher.ps1`, `gl` and `SHA256SUMS.txt`. Pushes to `main` rebuild the same way and refresh
+the `nightly` prerelease instead of creating a stable one.
+
+### Pages deploy
+
+`https://mssSMAKO99.github.io/gl` is served from a **different** repository
+(`mssSMAKO99/msssmako99.github.io`), and a workflow's `GITHUB_TOKEN` cannot write there. The Pages
+job therefore needs a repository secret:
+
+1. Create a fine-grained PAT with **Contents: read and write** on
+   `mssSMAKO99/msssmako99.github.io` only.
+2. Add it as `PAGES_DEPLOY_TOKEN` in *Settings -> Secrets and variables -> Actions* of this
+   repository.
+
+The job clones that repository, replaces the root `gl`, commits with the bot identity and pushes.
+Deploys share the `ghl-pages-deploy` concurrency group and never cancel each other. When the secret
+is missing the job emits a warning and skips, so forks still build green.
+
+---
+
 ## Test
 
 Four suites, none of them require Pester:
@@ -182,6 +237,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Run-UiRepeat.ps1
 # 4) live end-to-end against github.com (needs a repository that really exists)
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tools\Ui-Integration.ps1 -User octocat -Repo Hello-World
 ```
+
+CI runs suites 1 and 2 (`Run-MockTests.ps1 -NoUi`): the hosted Windows runner has no reliable desktop
+for the window scenarios, so those - and the screenshot check - stay a local acceptance step.
 
 What they cover:
 
