@@ -5,11 +5,13 @@
 
 function Get-GhlDefaultConfig {
     return [ordered]@{
-        Version         = 1
+        Version         = 2
         BaseDir         = (Join-Path $env:USERPROFILE 'GitHub Downloads')
         BackgroundPath  = ''
         BackgroundKind  = 'file'          # file | url
         DimmingOpacity  = 0.55
+        Theme           = 'Midnight'      # Midnight | Graphite | Ocean | Light
+        AnimateBackground = $true         # play animated GIF backgrounds
         PatCipher       = ''
         PatPlain        = ''              # only used when DPAPI is unavailable
         LastUser        = ''
@@ -187,6 +189,23 @@ function Get-GhlConfig {
     }
 
     if ($cfg.DownloadMode -notin @('Release', 'Source')) { $cfg.DownloadMode = 'Release' }
+
+    # --- appearance ------------------------------------------------------
+    if (-not $cfg.Theme -or $cfg.Theme -notin (Get-GhlThemeNames)) {
+        $cfg.Theme = Resolve-GhlThemeName -Name ([string]$cfg.Theme)
+    }
+
+    # a hand-edited config may hold the string "false", which [bool] would turn
+    # into $true; parse it explicitly instead
+    $animate = $cfg.AnimateBackground
+    if ($animate -is [string]) { $animate = -not ($animate -match '^(?i:false|0|no|off)$') }
+    $cfg.AnimateBackground = [bool]$animate
+
+    $configVersion = 0
+    if ([int]::TryParse([string]$cfg.Version, [ref]$configVersion) -and $configVersion -lt 2) {
+        $cfg.Version = 2
+        Write-GhlLog 'config.json migrated to version 2 (theme and GIF animation).' Debug
+    }
 
     $Global:GHL_DebugLog = [bool]($cfg.DebugLog -or $env:GHL_DEBUG)
     return $cfg

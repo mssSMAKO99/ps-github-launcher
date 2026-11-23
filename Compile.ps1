@@ -208,7 +208,8 @@ Write-Ok "XAML embedded ($($xamlText.Count) documents)"
 $sbBody = New-Object Text.StringBuilder
 $expectedOrder = @(
     '01-Bootstrap.ps1', '02-Config.ps1', '03-Api.ps1', '04-Downloader.ps1',
-    '05-Archive.ps1', '06-Launcher.ps1', '07-Workers.ps1', '08-Main.ps1'
+    '05-Archive.ps1', '06-Launcher.ps1', '07-Workers.ps1', '08-Main.ps1',
+    '09-Appearance.ps1'
 )
 $actualOrder = @($modules | ForEach-Object { $_.Name })
 if (($actualOrder -join '|') -ne ($expectedOrder -join '|')) {

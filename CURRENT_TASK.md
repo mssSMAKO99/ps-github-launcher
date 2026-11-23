@@ -1,87 +1,79 @@
-# CURRENT_TASK — M2: GitHub Actions
+# CURRENT_TASK — M3: темы и анимированный GIF-фон
 
 Детальное ТЗ текущего шага. Основа — `AGENTS.md`.
 
 ## Цель
 
-Собирать и публиковать лаунчер автоматически: тег `vX.Y.Z` даёт GitHub Release,
-push в `main` — nightly-prerelease, оба пути обновляют `gl` на Pages. Ветки и PR
-проходят сборку и тесты, но ничего не публикуют.
+Дать четыре согласованные палитры с переключением без перезапуска и раздел
+Appearance в настройках, а также поддержку анимированных GIF-фонов без сторонних
+библиотек. Выбор темы и анимации сохраняется в `config.json`.
 
-## Сценарии
+## A. Палитра и темы — `ui/Styles.xaml`, `src/09-Appearance.ps1`
 
-1. PR/ветка → CI собирает артефакт и гоняет тесты; публикации нет.
-2. `git tag v1.2.3 && git push origin v1.2.3` → артефакт штампуется `1.2.3`,
-   создаётся релиз с `GitHubLauncher.ps1`, `gl`, `SHA256SUMS.txt`.
-3. Push в `main` → тот же артефакт, обновляется prerelease `nightly`.
-4. В обоих случаях корневой `gl` в `mssSMAKO99/msssmako99.github.io` обновляется;
-   без секрета `PAGES_DEPLOY_TOKEN` job пишет warning и пропускается.
-5. Битая версия (не `x.y.z`) валит сборку до записи файлов.
+1. Все цвета шаблонов переведены с хардкода-hex и `StaticResource` на
+   `DynamicResource`; в палитре 32 токена (поверхности, границы, акцент и его
+   состояния, текст трёх уровней, soft-варианты, панель/футер/scrim/toast,
+   ползунок).
+2. Четыре темы: `Midnight` (по умолчанию, прежний вид), `Graphite` (фиолетовый
+   акцент), `Ocean` (бирюзовый), `Light` (светлая, для дневной работы).
+3. `Set-GhlThemeResources -Window -Name` заменяет кисти в словаре ресурсов окна;
+   `Set-GhlTheme -Name` обновляет кэш `$state.Brushes` для диалогов, собранных
+   кодом, и пишет `$state.Theme`.
+4. Имя темы нормализуется без учёта регистра, неизвестное → `Midnight`.
+5. Кисти создаются через `BrushConverter` (иначе WPF получает строку цвета и
+   падает на применении) и замораживаются после создания.
+6. Picker-окно получает активную тему сразу после `XamlReader`-разбора.
 
-## A. Сборка — `Compile.ps1`
+## B. GIF-фон — `src/09-Appearance.ps1`
 
-1. Новый параметр `-Version`: принимает `x.y.z` с необязательным `-suffix`,
-   снимает ведущую `v`, перезаписывает `VERSION`, приоритетнее `-NoVersionBump`.
-2. Невалидная версия — ошибка до создания артефакта.
-3. Инкремент работает только для чистого `x.y.z`; suffixed-версия не инкрементится.
-4. Важно: `$Version` и `$version` в PowerShell — одна переменная; запрос версии
-   сохраняется в `$RequestedVersion` до чтения `VERSION`, иначе параметр затирается.
-5. Заголовок артефакта содержит реальный URL репозитория.
+1. `Start-GhlGifBackground`: GDI+ (`System.Drawing`) декодирует GIF и сам
+   композитит кадры/Disposal; WPF показывает только первый кадр.
+2. Кадры конвертируются по одному (`GetHbitmap` → `CreateBitmapSourceFromHBitmap`
+   → `Freeze`), дескриптор удаляется через `GhlNative.DeleteObject`.
+3. Задержки берутся из `PropertyTagFrameDelay` (сотые доли секунды), минимум
+   20 мс, по умолчанию 100 мс; зацикливание.
+4. Лимит: анимация отключается для изображений больше 8.3 Мп (показывается
+   статичный первый кадр), чтобы не копировать десятки МБ на кадр.
+5. `Stop-GhlGifBackground` останавливает таймер и освобождает GDI-образ; его
+   вызывают при смене фона, сбросе, закрытии окна и выключении анимации.
+6. `Update-GhlGifPlayback` ставит на паузу при свёрнутом/скрытом окне
+   (`StateChanged` / `IsVisibleChanged`).
+7. Счётчик `Shown` в состоянии плеера — для тестов (индекс кадров циклический).
 
-## B. Workflows — `.github/workflows/`
+## C. Настройки и конфиг
 
-1. `build.yml` — переиспользуемый (`workflow_call`), `windows-latest`,
-   `shell: powershell` (PS 5.1): резолв версии → `Run-Tests.ps1 -Offline` →
-   `Run-MockTests.ps1 -NoUi` → `Compile.ps1 -NoVersionBump -Version <v>` →
-   проверка (размер, отсутствие BOM, ASCII, встроенная версия, `VERSION`) →
-   `dist/GitHubLauncher.ps1` + `dist/gl` (побайтово равны) + `SHA256SUMS.txt` →
-   `actions/upload-artifact@v4` (`ghl-dist`) → summary.
-2. `ci.yml` — PR, push в ветки (кроме `main`, без тегов), `workflow_dispatch`;
-   `contents: read`, concurrency с `cancel-in-progress: true`, только вызов build.
-3. `release.yml` — push тегов `v*`, push в `main`, `workflow_dispatch`:
-   - `prepare` (ubuntu): версия из тега (снять `v`) или из `VERSION`, канал;
-   - `build` (reusable) с этой версией;
-   - `publish` (ubuntu, `contents: write`, `gh` CLI): тег → релиз с
-     `--generate-notes` (или повторная загрузка с `--clobber`); `main` → prerelease
-     `nightly` с `--clobber`;
-   - `pages` (ubuntu): проверка секрета, скачивание артефакта, `git clone --depth 1`
-     Pages-репозитория, замена `gl`, коммит от `github-actions[bot]`, `git push`;
-     concurrency `ghl-pages-deploy`, `cancel-in-progress: false`.
-4. Никаких сторонних actions кроме `checkout`, `upload-artifact`,
-   `download-artifact`.
+1. `Get-GhlDefaultConfig`: `Version = 2`, `Theme = 'Midnight'`,
+   `AnimateBackground = $true`.
+2. Нормализация: неизвестная тема → `Midnight`; строка `"false"` из
+   hand-edited JSON не превращается в `$true`; конфиг версии 1 мигрирует в 2.
+3. `Save-GhlUiConfig`: сохраняет `Theme` из `cbTheme` и `AnimateBackground` из
+   `chkAnimateBg`.
+4. `Initialize-GhlUiFromConfig`: тема применяется до фона и остальных элементов;
+   ComboBox заполняется `Get-GhlThemeNames`; чекбокс анимации восстанавливается.
+5. UI: в секции APPEARANCE — `cbTheme`, `txtThemeHint`, `chkAnimateBg`; все имена
+   добавлены в `Get-GhlUiMap`.
 
-## C. Документация
+## D. Тесты
 
-1. README: `-Version`, раздел Continuous delivery (таблица workflow, тег-релиз,
-   nightly, настройка `PAGES_DEPLOY_TOKEN`, concurrency), раскладка `.github/`,
-   что CI гоняет suites 1–2 без окон.
-2. README: бейджи ci/release.
+1. Unit: 4 темы, одинаковый набор ≥30 токенов, каждая кисть валидна,
+   регистронезависимый резолв и fallback; миграция конфига v1→v2 и разбор
+   `"false"`.
+2. Оконный сценарий `demo-tool`: переключение Midnight → Light меняет фон и
+   текст; генерация 3-кадрового GIF, плеер рисует ≥2 кадра; снятие галочки
+   останавливает плеер.
+3. `Run-Tests.ps1 -Offline` — 28 тестов; mock-набор — 17; UiRepeat — 3.
+4. `Capture-Ui.ps1 -Theme Light -Settings` — визуальная проверка обеих тем.
 
-## D. Приёмка
+## E. Не входит
 
-1. `actionlint` 1.7.12: 0 ошибок для трёх файлов.
-2. Inline PowerShell-шаги `build.yml` выполнены в песочнице (резолв, сборка,
-   verify, dist, summary) — зелёные.
-3. Bash-шаги `release.yml`: `bash -n` чисто; резолв версии проверен для тега
-   (`v1.2.3`→`1.2.3`, канал `tag`), ветки (`VERSION`, канал `nightly`), битого
-   тега (отказ).
-4. `Compile.ps1 -NoVersionBump -Version v2.5.1` штампует `2.5.1` и пишет VERSION;
-   `-Version 1.2` отклоняется.
-5. `Run-Tests.ps1 -Offline` — 26/26; `Run-MockTests.ps1` — 17/17; артефакт ASCII
-   без BOM, XAML грузится.
-6. Ветка `feature/m2-ci`; коммиты M1 и M2 раздельные, в `main` не пушится.
+Редизайн/мягкая палитра и вкладки настроек (M4), избранные репозитории (M5),
+редактор палитр, темы из файла.
 
-## E. Решения и ограничения
+## F. Риски
 
-1. Оконные сценарии в CI не запускаются (`-NoUi`): у hosted-runner нет стабильного
-   десктопа; окно и скриншот остаются локальной приёмкой.
-2. `GITHUB_TOKEN` не может писать в другой репозиторий → `PAGES_DEPLOY_TOKEN`
-   (fine-grained PAT, Contents: read+write только на Pages-репозиторий).
-3. Теги только `vX.Y.Z` (`-suffix` допускается); иначе job `prepare` падает.
-4. Публикация идемпотентна: повторный запуск перезаписывает ассеты (`--clobber`).
-5. На Pages кладётся только `gl`; остальные файлы репозитория не трогаются.
-6. Изменения в `main` публикуют nightly, а не стабильный релиз.
-
-## F. Не входит
-
-Темы и GIF (M3), редизайн UI (M4), избранные репозитории (M5).
+- `DynamicResource` в триггерах шаблонов проверен `XamlReader` при сборке.
+- Старые кисти замораживались стилями; замена записи в словаре обходит это,
+  поэтому менять надо именно ресурс, а не `Color` кисти.
+- GIF с большим числом кадров остаётся дешёвым по памяти (один кадр за раз), но
+  полнокадровая перерисовка 1080p на 10 fps всё же заметна на слабых машинах —
+  есть галочка отключения.

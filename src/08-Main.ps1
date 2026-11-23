@@ -78,6 +78,12 @@ public class GhlCandidate
     public string SizeText { get; set; }
     public override string ToString() { return RelativePath; }
 }
+
+public static class GhlNative
+{
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(System.IntPtr hObject);
+}
 "@
 
     Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
@@ -122,6 +128,7 @@ function Get-GhlUiMap {
         'cbUser', 'txtToken', 'chkRememberToken', 'btnSearch', 'txtRateLimit', 'btnFavorite', 'lstFavorites', 'txtFavoritesEmpty', 'btnRemoveFavorite', 'txtBaseDirHint',
         'txtBaseDir', 'btnBrowseBase', 'chkRunAfter', 'chkPrerelease', 'btnOpenBase',
         'txtBg', 'btnBrowseBg', 'txtDimLabel', 'sldDim', 'btnClearBg', 'txtFooterInfo',
+        'cbTheme', 'txtThemeHint', 'chkAnimateBg',
         'txtFilter', 'txtFilterPlaceholder', 'spinner', 'btnRefresh', 'txtCount',
         'dgRepos', 'pnlEmpty', 'txtEmptyTitle', 'txtEmptyHint',
         'txtRepoName', 'txtRepoDesc', 'txtRepoMeta',
@@ -1224,6 +1231,7 @@ function Show-GhlPickerDialog {
         return $null
     }
 
+    [void](Set-GhlThemeResources -Window $win -Name ([string]$state.Config.Theme))
     $win.Owner = $state.UI.Window
     $win.Icon = $state.UI.Window.Icon
 
@@ -1367,6 +1375,7 @@ function Set-GhlBackgroundImage {
     $ui = $state.UI
 
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        Stop-GhlGifBackground
         $ui.imgBackground.Source = $null
         $ui.imgBackground.Visibility = [Windows.Visibility]::Collapsed
         $ui.rectDim.Opacity = 0
@@ -1374,6 +1383,17 @@ function Set-GhlBackgroundImage {
     }
 
     try {
+        # a GIF is played by GDI+ when animation is allowed; Start falls back to
+        # $false for single-frame files, which then take the static path below
+        if ($Path -match '(?i)\.gif$') {
+            if (Start-GhlGifBackground -Path $Path) {
+                Update-GhlRoundedClip
+                Write-GhlLog "Background animation applied: $Path"
+                return $true
+            }
+        }
+        Stop-GhlGifBackground
+
         $bmp = New-Object Windows.Media.Imaging.BitmapImage
         $bmp.BeginInit()
         $bmp.CacheOption = [Windows.Media.Imaging.BitmapCacheOption]::OnLoad
@@ -1391,6 +1411,7 @@ function Set-GhlBackgroundImage {
     } catch {
         Write-GhlLog "Background image could not be loaded: $($_.Exception.Message)" Warn
         Show-GhlToast -Message "Could not load that image: $($_.Exception.Message)" -Kind 'warn'
+        Stop-GhlGifBackground
         $ui.imgBackground.Source = $null
         $ui.imgBackground.Visibility = [Windows.Visibility]::Collapsed
         $ui.rectDim.Opacity = 0
@@ -1521,6 +1542,8 @@ function Save-GhlUiConfig {
         $cfg.BackgroundPath = [string]$ui.txtBg.Text
         $cfg.BackgroundKind = if ($cfg.BackgroundPath -match '^https?://') { 'url' } else { 'file' }
         $cfg.DimmingOpacity = [Math]::Round($ui.sldDim.Value / 100.0, 3)
+        $cfg.Theme = Resolve-GhlThemeName -Name ([string]$ui.cbTheme.SelectedItem)
+        $cfg.AnimateBackground = [bool]$ui.chkAnimateBg.IsChecked
         $cfg.DownloadMode = if ($ui.rbModeSource.IsChecked) { 'Source' } else { 'Release' }
         $cfg.RunAfterDownload = [bool]$ui.chkRunAfter.IsChecked
         $cfg.IncludePrerelease = [bool]$ui.chkPrerelease.IsChecked
@@ -1567,6 +1590,21 @@ function Initialize-GhlUiFromConfig {
     $state = $Global:GhlState
     $ui = $state.UI
     $cfg = $state.Config
+
+    # the theme goes first: everything created after this point inherits it
+    $ui.cbTheme.ItemsSource = @(Get-GhlThemeNames)
+    $state.SuppressThemeChange = $true
+    try {
+        [void](Set-GhlTheme -Name ([string]$cfg.Theme))
+        $ui.cbTheme.SelectedItem = $state.Theme
+    } finally {
+        $state.SuppressThemeChange = $false
+    }
+
+    $state.SuppressAppearanceChange = $true
+    try { $ui.chkAnimateBg.IsChecked = [bool]$cfg.AnimateBackground } finally {
+        $state.SuppressAppearanceChange = $false
+    }
 
     $ui.cbUser.Text = [string]$cfg.LastUser
     $ui.txtBaseDir.Text = [string]$cfg.BaseDir
@@ -2317,6 +2355,36 @@ function Connect-GhlEvents {
             if ($s.ActualWidth -gt 0 -and $s.ActualHeight -gt 0) { Update-GhlRoundedClip }
         })
 
+    # animation must not run while the window is hidden or minimized
+    $win.Add_StateChanged({ param($s, $e) Update-GhlGifPlayback })
+    $win.Add_IsVisibleChanged({ param($s, $e) Update-GhlGifPlayback })
+
+    $ui.cbTheme.Add_SelectionChanged({
+            param($s, $e)
+            $st = $Global:GhlState
+            if ($st.SuppressThemeChange) { return }
+            $name = [string]$s.SelectedItem
+            if (-not $name) { return }
+            $st.Config.Theme = $name
+            [void](Set-GhlTheme -Name $name)
+            Show-GhlToast -Message "Theme: $name" -Kind 'info' -Ms 1500
+        })
+
+    $ui.chkAnimateBg.Add_Checked({
+            param($s, $e)
+            $st = $Global:GhlState
+            if ($st.SuppressAppearanceChange) { return }
+            $st.Config.AnimateBackground = $true
+            Apply-GhlBackgroundSource -Source ([string]$st.UI.txtBg.Text)
+        })
+    $ui.chkAnimateBg.Add_Unchecked({
+            param($s, $e)
+            $st = $Global:GhlState
+            if ($st.SuppressAppearanceChange) { return }
+            $st.Config.AnimateBackground = $false
+            Apply-GhlBackgroundSource -Source ([string]$st.UI.txtBg.Text)
+        })
+
     $ui.sldDim.Add_ValueChanged({
             param($s, $e)
             $st = $Global:GhlState
@@ -2351,7 +2419,7 @@ function Connect-GhlEvents {
             $st.UI.txtBg.Text = ''
             $st.Config.BackgroundPath = ''
             Set-GhlBackgroundImage -Path ''
-            Show-GhlToast -Message 'Background reset to the default dark theme.' -Kind 'info' -Ms 2000
+            Show-GhlToast -Message 'Background reset to the default theme.' -Kind 'info' -Ms 2000
         })
 
     # --- keyboard shortcuts ----------------------------------------------
@@ -2387,6 +2455,7 @@ function Connect-GhlEvents {
             Write-GhlLog 'Window closing.'
             try { $st.Sync.CancelRequested = $true } catch { }
             try { $st.SyncBg.CancelRequested = $true } catch { }
+            Stop-GhlGifBackground
             if ($st.FilterTimer) { $st.FilterTimer.Stop() }
             Stop-GhlToastTimer
 
@@ -2506,6 +2575,10 @@ function Start-GitHubLauncher {
         FilterTokens    = @()
         ToastTimer      = $null
         Brushes         = $brushes
+        Theme           = 'Midnight'
+        Gif             = $null
+        SuppressThemeChange      = $false
+        SuppressAppearanceChange = $false
         PickerWindow    = $null
         ConfirmWindow   = $null
         SuppressSelection     = $false

@@ -41,7 +41,9 @@ The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one
 | Launch | `.exe` / `.msi` / `.ps1` / `.bat` / `.cmd`. One candidate launches directly; several open a picker with "remember my choice". Off by default. |
 | Layout | `{BaseDir}\{Username}\{Repository}` with a `.ghl.json` marker so a badge can distinguish *Downloaded* from *Partial*. |
 | UI | Borderless, dark, the background image respects the rounded corners, custom titlebar + edge resize, animated spinner, toast notifications, settings overlay (gear). |
-| Settings | Base folder, background, dimming, favourites, debug log, PAT, mode, checkboxes and window geometry persisted to `%LocalAppData%\GitHubLauncher\config.json`. |
+| Themes | Four built-in palettes - Midnight, Graphite, Ocean, Light - switched live from Settings (no restart) and saved in `config.json`. |
+| Background | Local file or URL, JPEG/PNG/BMP/GIF, dimming slider. Animated GIFs play frame by frame, pause when the window is hidden or minimized and can be switched off. |
+| Settings | Base folder, theme, background, dimming, favourites, debug log, PAT, mode, checkboxes and window geometry persisted to `%LocalAppData%\GitHubLauncher\config.json`. |
 
 ### Launch safety
 
@@ -93,7 +95,8 @@ GithubLauncher/
 │  ├─ 05-Archive.ps1        # safe extraction + executable discovery
 │  ├─ 06-Launcher.ps1       # folder layout, markers, process start
 │  ├─ 07-Workers.ps1        # runspace script text
-│  └─ 08-Main.ps1           # WPF host, event pump, state machine
+│  ├─ 08-Main.ps1           # WPF host, event pump, state machine
+│  └─ 09-Appearance.ps1     # themes (palette swap) + animated GIF player
 ├─ tools/
 │  ├─ Test-Xaml.ps1         # STA XAML load check used by the build
 │  ├─ Ui-Integration.ps1    # live end-to-end test against github.com
@@ -245,8 +248,8 @@ What they cover:
 
 | Suite | Coverage |
 | --- | --- |
-| `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
-| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
+| `Run-Tests.ps1` | formatting, path sanitising, zip-slip, archive unwrapping, executable ranking, DPAPI, config merge, favourites (incl. the single-element JSON trap), theme palettes and config migration, mark of the web, signature reporting, checksum matching, `RemoteSigned` policy, the no-BOM/ASCII guard, plus live API + worker tests when online |
+| `Run-MockTests.ps1` | normalisation, 404/403 classification with reset time, asset compatibility/ranking, atomic + truncated + cancelled downloads, and four window scenarios: version picker + older version + pre-release filter + toast regression -> marker, theme switch + animated GIF + animation toggle, no releases -> source, downloaded script blocked by RemoteSigned, multi-select batch on the selected version |
 | `Run-UiRepeat.ps1` | the window opens twice in one PowerShell session, runs via `-File`, and refuses to start in an MTA host |
 | `Ui-Integration.ps1` | the same flow against api.github.com |
 
@@ -262,7 +265,7 @@ Visual checks:
 ```powershell
 # renders the window against the mock API and saves a PNG
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File .\tools\Capture-Ui.ps1 -Out shot.png `
-    -AfterDownload -Background C:\path\to\wallpaper.jpg
+    -Theme Light -Background C:\path\to\wallpaper.gif -AfterDownload
 ```
 
 Smoke test that the real window boots and shuts down cleanly:
@@ -337,11 +340,13 @@ or cancelled download can never be mistaken for a complete one.
 
 ```json
 {
-  "Version": 1,
+  "Version": 2,
   "BaseDir": "C:\\Users\\you\\GitHub Downloads",
   "BackgroundPath": "",
   "BackgroundKind": "file",
   "DimmingOpacity": 0.55,
+  "Theme": "Midnight",
+  "AnimateBackground": true,
   "PatCipher": "<DPAPI base64>",
   "PatPlain": "",
   "LastUser": "ChrisTitusTech",
@@ -364,6 +369,9 @@ or cancelled download can never be mistaken for a complete one.
   readers always wrap it in `@()`.
 * Set `GHL_CONFIG_DIR` to point the whole app at a different settings folder (used by the tests so
   they never touch your real config).
+* `Theme` is one of `Midnight`, `Graphite`, `Ocean`, `Light`; an unknown value falls back to
+  `Midnight`. `AnimateBackground: false` keeps GIF backgrounds on their first frame.
+* Version 1 configs migrate to version 2 on load: the new appearance keys get their defaults.
 
 Logs: `%LocalAppData%\GitHubLauncher\logs\launcher.log` (rotated at 1 MB); with `GHL_CONFIG_DIR`
 set, they go to `$env:GHL_CONFIG_DIR\logs` together with the config.

@@ -49,6 +49,73 @@ function Get-GhlMockRequestCount {
     try { return @(Get-Content -LiteralPath $log -ErrorAction Stop).Count } catch { return -1 }
 }
 
+function New-GhlUiTestGif {
+    <#
+        Writes a tiny 3-frame animated GIF without third-party libraries.
+        GDI+ can decode such a file (SelectActiveFrame) even though it refuses
+        to *write* multi-frame GIFs through SaveAdd on this runner.
+    #>
+    param([Parameter(Mandatory)][string]$Path, [int]$MinCodeSize = 2)
+
+    Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+
+    function Get-Lzw([int[]]$Indices) {
+        $clear = 1 -shl $MinCodeSize
+        $end = $clear + 1
+        $codes = New-Object System.Collections.Generic.List[int]
+        $codes.Add($clear)
+        foreach ($i in $Indices) { $codes.Add($i) }
+        $codes.Add($end)
+        $bits = New-Object System.Collections.Generic.List[int]
+        foreach ($c in $codes) {
+            for ($b = 0; $b -lt ($MinCodeSize + 1); $b++) { $bits.Add(($c -shr $b) -band 1) }
+        }
+        $bytes = New-Object System.Collections.Generic.List[byte]
+        for ($i = 0; $i -lt $bits.Count; $i += 8) {
+            $v = 0
+            for ($b = 0; $b -lt 8; $b++) {
+                if ($i + $b -lt $bits.Count -and $bits[$i + $b]) { $v = $v -bor (1 -shl $b) }
+            }
+            $bytes.Add([byte]$v)
+        }
+        return $bytes.ToArray()
+    }
+
+    $ms = New-Object IO.MemoryStream
+    $w = New-Object IO.BinaryWriter($ms)
+    try {
+        $w.Write([Text.Encoding]::ASCII.GetBytes('GIF89a'))
+        $w.Write([uint16]4); $w.Write([uint16]4)
+        $w.Write([byte]0xF1); $w.Write([byte]0); $w.Write([byte]0)
+        foreach ($rgb in @(@(255, 0, 0), @(0, 0, 255), @(0, 255, 0), @(255, 255, 255))) {
+            $w.Write([byte]$rgb[0]); $w.Write([byte]$rgb[1]); $w.Write([byte]$rgb[2])
+        }
+        $w.Write([byte[]]@(0x21, 0xFF, 0x0B)); $w.Write([Text.Encoding]::ASCII.GetBytes('NETSCAPE2.0'))
+        $w.Write([byte[]]@(0x03, 0x01, 0x00, 0x00, 0x00))
+        $frames = @(
+            @(1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1),
+            @(2, 2, 2, 2, 2, 0, 0, 2, 2, 0, 0, 2, 2, 2, 2, 2),
+            @(0, 0, 0, 0, 0, 3, 3, 0, 0, 3, 3, 0, 0, 0, 0, 0)
+        )
+        foreach ($pixels in $frames) {
+            $w.Write([byte[]]@(0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00))
+            $w.Write([byte]0x2C); $w.Write([uint16]0); $w.Write([uint16]0)
+            $w.Write([uint16]4); $w.Write([uint16]4); $w.Write([byte]0)
+            $w.Write([byte]2)
+            $data = Get-Lzw -Indices ([int[]]$pixels)
+            for ($i = 0; $i -lt $data.Length; $i += 255) {
+                $len = [Math]::Min(255, $data.Length - $i)
+                $w.Write([byte]$len); $w.Write($data, $i, $len)
+            }
+            $w.Write([byte]0)
+        }
+        $w.Write([byte]0x3B); $w.Flush()
+        [IO.File]::WriteAllBytes($Path, $ms.ToArray())
+    } finally {
+        $w.Dispose(); $ms.Dispose()
+    }
+}
+
 $script:SelectedVersion = ''
 $script:VersionCount = 0
 $script:InstalledText = ''
@@ -355,8 +422,52 @@ $automation = {
                             if ([double]$ui.toast.Opacity -lt 0.99) {
                                 throw "the second toast is invisible (Opacity=$($ui.toast.Opacity))"
                             }
-                            $script:Stage = 'done'
+                            $script:ThemeBefore = $ui.RootBorder.Background.Color.ToString()
+                            $ui.cbTheme.SelectedItem = 'Light'
+                            $script:Stage = 'theme'
                         }
+                    }
+
+                    'theme' {
+                        $bg = $ui.RootBorder.Background.Color.ToString()
+                        if ($st.Theme -ne 'Light') { throw "the theme was not applied (state='$($st.Theme)')" }
+                        if ($bg -eq $script:ThemeBefore) { throw 'switching the theme did not repaint the window' }
+                        $script:ThemeAfter = $bg
+                        $script:ThemeText = $ui.txtRepoDesc.Foreground.Color.ToString()
+
+                        $script:GifPath = Join-Path $env:GHL_CONFIG_DIR 'mock-anim.gif'
+                        New-GhlUiTestGif -Path $script:GifPath
+                        $ui.txtBg.Text = $script:GifPath
+                        Apply-GhlBackgroundSource -Source $script:GifPath
+                        $script:GifAt = Get-Date
+                        $script:Stage = 'gif'
+                    }
+
+                    'gif' {
+                        if (((Get-Date) - $script:GifAt).TotalMilliseconds -lt 500) { return }
+                        if (-not $st.Gif) { throw 'the animated GIF did not start playing' }
+                        if ([int]$st.Gif.Shown -lt 2) {
+                            $d = $st.Gif
+                            throw ("the GIF did not render frames (frames={0} shown={1} delays={2} enabled={3} interval={4} size={5} file={6})" -f `
+                                    $d.Frames, $d.Shown, ($d.Delays -join ','), $d.Timer.IsEnabled,
+                                    $d.Timer.Interval.TotalMilliseconds,
+                                    (Get-Item -LiteralPath $script:GifPath).Length, $script:GifPath)
+                        }
+                        if (-not $ui.imgBackground.Source) { throw 'no GIF frame was rendered' }
+                        $script:GifFrames = $st.Gif.Frames
+                        $script:GifShown = $st.Gif.Shown
+
+                        # disabling animation must stop the player and keep a still frame
+                        $ui.chkAnimateBg.IsChecked = $false
+                        $script:GifStopAt = Get-Date
+                        $script:Stage = 'gifstopped'
+                    }
+
+                    'gifstopped' {
+                        if (((Get-Date) - $script:GifStopAt).TotalMilliseconds -lt 300) { return }
+                        if ($st.Gif) { throw 'unchecking animation did not stop the GIF player' }
+                        $script:GifStopped = 'yes'
+                        $script:Stage = 'done'
                     }
                 }
 
@@ -370,7 +481,7 @@ $automation = {
 
                 if ($script:Stage -eq 'done') {
                     $s.Stop()
-                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ndir=$($script:DestDir)")
+                    Save-Result ("OK`nrepos=$($script:RepoCount)`nversions=$($script:VersionCount)`nrelease=$($script:ReleaseTag)`nasset=$($script:AssetName)`nassets=$($script:AssetCount)`nmarkerTag=$($script:MarkerTag)`ninstalled=$($script:InstalledText)`nbadge=$($script:Badge)`ntheme=$($script:ThemeAfter)`ntext=$($script:ThemeText)`ngifframes=$($script:GifFrames)`ngifshown=$($script:GifShown)`ngifstopped=$($script:GifStopped)`ndir=$($script:DestDir)")
                     $ui.Window.Close()
                 }
             } catch {
