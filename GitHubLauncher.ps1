@@ -7,7 +7,7 @@
     or:
         powershell.exe -STA -ExecutionPolicy Bypass -File GitHubLauncher.ps1
 
-    Repository: https://github.com/mssSMAKO99/ps-github-launcher
+    Repository: https://github.com/overcumatosis/ps-github-launcher
 #>
 
 #requires -Version 5.1
