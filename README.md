@@ -8,7 +8,7 @@ It ships as **one compiled `.ps1`**, usable without cloning anything:
 
 ```powershell
 # quick start on any PC with Windows PowerShell
-irm https://mssSMAKO99.github.io/gl | iex
+irm https://overcumatosis.github.io/gl | iex
 ```
 
 or save the file and run it directly:
@@ -19,8 +19,8 @@ powershell.exe -STA -ExecutionPolicy Bypass -File .\GitHubLauncher.ps1
 
 The `https://` scheme is required: `Invoke-RestMethod` rejects a URI without one.
 
-[![ci](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/ci.yml)
-[![release](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/mssSMAKO99/ps-github-launcher/actions/workflows/release.yml)
+[![ci](https://github.com/overcumatosis/ps-github-launcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/overcumatosis/ps-github-launcher/actions/workflows/ci.yml)
+[![release](https://github.com/overcumatosis/ps-github-launcher/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/overcumatosis/ps-github-launcher/actions/workflows/release.yml)
 
 ---
 
