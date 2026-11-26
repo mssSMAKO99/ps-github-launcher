@@ -6,7 +6,7 @@
 #
 # Pages lives in a different repository, so a GITHUB_TOKEN cannot write to it;
 # set PAGES_DEPLOY_TOKEN (fine-grained PAT, Contents: read+write on
-# mssSMAKO99/msssmako99.github.io). Without it the Pages job warns and skips.
+# overcumatosis/overcumatosis.github.io). Without it the Pages job warns and skips.
 
 name: release
 
@@ -131,7 +131,7 @@ jobs:
         shell: bash
         run: |
           if [[ -z "${PAGES_DEPLOY_TOKEN}" ]]; then
-            echo "::warning title=Pages deploy skipped::PAGES_DEPLOY_TOKEN is not set. Add a fine-grained token with Contents:write on mssSMAKO99/msssmako99.github.io, otherwise https://mssSMAKO99.github.io/gl stays stale."
+            echo "::warning title=Pages deploy skipped::PAGES_DEPLOY_TOKEN is not set. Add a fine-grained token with Contents:write on overcumatosis/overcumatosis.github.io, otherwise https://overcumatosis.github.io/gl stays stale."
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -144,7 +144,7 @@ jobs:
           name: ghl-dist
           path: dist
 
-      - name: Push gl to msssmako99.github.io
+      - name: Push gl to overcumatosis.github.io
         if: steps.token.outputs.present == 'true'
         env:
           PAGES_DEPLOY_TOKEN: ${{ secrets.PAGES_DEPLOY_TOKEN }}
@@ -155,7 +155,7 @@ jobs:
           set -euo pipefail
           work="$(mktemp -d)"
           git clone --depth 1 \
-            "https://x-access-token:${PAGES_DEPLOY_TOKEN}@github.com/mssSMAKO99/msssmako99.github.io.git" \
+            "https://x-access-token:${PAGES_DEPLOY_TOKEN}@github.com/overcumatosis/overcumatosis.github.io.git" \
             "$work"
           cp dist/gl "$work/gl"
 
